@@ -111,11 +111,27 @@ function assert(condition, label) {
   if (!condition) throw new Error(label);
 }
 
+function assertRange(range, label) {
+  assert(Array.isArray(range), label + " missing");
+  assertEqual(range.length, 2, label + " length");
+  assert(Number.isInteger(range[0]), label + " start invalid");
+  assert(Number.isInteger(range[1]), label + " end invalid");
+  assert(range[0] <= range[1], label + " order invalid");
+}
+
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
-function assertCanonicalHandoffArtifacts({ state, stateText, manifest, handoffMarkdown, label }) {
+function assertCanonicalHandoffArtifacts({
+  state,
+  stateText,
+  manifest,
+  handoffMarkdown,
+  rehydratedSpans,
+  expectExactCodeCapsule = false,
+  label,
+}) {
   assertEqual(state.schema, "handoff-state.v1", label + " state schema");
   assertEqual(manifest.schema, "handoff-manifest.v1", label + " manifest schema");
   assert(Array.isArray(state.user_intent_events), label + " user_intent_events missing");
@@ -142,6 +158,54 @@ function assertCanonicalHandoffArtifacts({ state, stateText, manifest, handoffMa
     assert(capsule.raw_slice_sha256, label + " evidence " + idx + " raw hash missing");
     assert(capsule.extracted_text_sha256, label + " evidence " + idx + " text hash missing");
     assert(Array.isArray(capsule.record_range), label + " evidence " + idx + " record range missing");
+    assertRange(capsule.char_range, label + " evidence " + idx + " char range");
+    assert(Array.isArray(capsule.text_segments), label + " evidence " + idx + " text segments missing");
+    assert(capsule.text_segments.length > 0, label + " evidence " + idx + " text segments empty");
+    for (const [segmentIdx, segment] of capsule.text_segments.entries()) {
+      assert(Number.isInteger(segment.line), label + " evidence " + idx + " segment " + segmentIdx + " line");
+      assert(segment.record_sha256, label + " evidence " + idx + " segment " + segmentIdx + " record hash");
+      assertRange(segment.char_range, label + " evidence " + idx + " segment " + segmentIdx + " char range");
+      assert(
+        segment.char_range[0] >= capsule.char_range[0] && segment.char_range[1] <= capsule.char_range[1],
+        label + " evidence " + idx + " segment " + segmentIdx + " char range outside capsule"
+      );
+      assert(
+        segment.extracted_text_sha256,
+        label + " evidence " + idx + " segment " + segmentIdx + " text hash missing"
+      );
+    }
+    assert(Array.isArray(capsule.code_capsules), label + " evidence " + idx + " code capsules missing");
+    for (const [codeIdx, code] of capsule.code_capsules.entries()) {
+      assert(code.id, label + " evidence " + idx + " code " + codeIdx + " id missing");
+      assert(code.language, label + " evidence " + idx + " code " + codeIdx + " language missing");
+      assertRange(code.char_range, label + " evidence " + idx + " code " + codeIdx + " char range");
+      assert(
+        code.exact_text_sha256,
+        label + " evidence " + idx + " code " + codeIdx + " exact text hash missing"
+      );
+      assert(
+        code.normalized_code_sha256,
+        label + " evidence " + idx + " code " + codeIdx + " normalized code hash missing"
+      );
+    }
+  }
+
+  if (rehydratedSpans) {
+    assertEqual(
+      rehydratedSpans.length,
+      state.evidence_capsules.length,
+      label + " rehydrated span/evidence count"
+    );
+  }
+
+  if (rehydratedSpans && expectExactCodeCapsule) {
+    const codeSpan = rehydratedSpans.find((span) =>
+      (span.code_capsules || []).some((code) => code.exact_text === "echo alpha")
+    );
+    assert(codeSpan, label + " rehydrated code capsule missing");
+    const codeCapsule = codeSpan.code_capsules.find((code) => code.exact_text === "echo alpha");
+    assertEqual(codeCapsule.language, "sh", label + " code capsule language");
+    assertEqual(codeCapsule.exact_text_sha256, sha256("echo alpha"), label + " code capsule exact hash");
   }
 }
 
@@ -152,7 +216,7 @@ try {
       type: "user",
       uuid: "u-1",
       timestamp: "2026-06-20T00:00:00.000Z",
-      message: { role: "user", content: "First instruction: preserve alpha." },
+      message: { role: "user", content: "First instruction: preserve alpha.\n\n```sh\necho alpha\n```" },
     },
     {
       type: "assistant",
@@ -203,6 +267,7 @@ try {
   const firstState = JSON.parse(firstStateText);
   const firstManifest = await readJson(join(firstOutDir, "handoff-manifest.json"));
   const firstHandoffMarkdown = await readFile(join(firstOutDir, "handoff.md"), "utf8");
+  const firstRehydratedSpans = await readJson(join(firstOutDir, "rehydrated-spans.json"));
 
   assertIncludes(firstSummaryText, "## User Messages", "first handoff");
   assertIncludes(firstSummaryText, "First instruction: preserve alpha.", "first handoff");
@@ -214,6 +279,8 @@ try {
     stateText: firstStateText,
     manifest: firstManifest,
     handoffMarkdown: firstHandoffMarkdown,
+    rehydratedSpans: firstRehydratedSpans,
+    expectExactCodeCapsule: true,
     label: "first handoff",
   });
   assertEqual(firstState.user_intent_events.length, 3, "first handoff intent count");
@@ -248,6 +315,7 @@ try {
   const secondState = JSON.parse(secondStateText);
   const secondManifest = await readJson(join(secondOutDir, "handoff-manifest.json"));
   const secondHandoffMarkdown = await readFile(join(secondOutDir, "handoff.md"), "utf8");
+  const secondRehydratedSpans = await readJson(join(secondOutDir, "rehydrated-spans.json"));
 
   assertIncludes(secondSummaryText, "First instruction: preserve alpha.", "second handoff");
   assertIncludes(secondSummaryText, "preserve gamma.", "second handoff");
@@ -257,6 +325,7 @@ try {
     stateText: secondStateText,
     manifest: secondManifest,
     handoffMarkdown: secondHandoffMarkdown,
+    rehydratedSpans: secondRehydratedSpans,
     label: "second handoff",
   });
 

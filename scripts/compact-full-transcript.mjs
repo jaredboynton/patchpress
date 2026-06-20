@@ -1653,18 +1653,81 @@ function extractRecordText(record) {
   return "";
 }
 
+function normalizeCodeText(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/\n+$/g, "");
+}
+
+function buildExtractedSpanText(slice, startLine) {
+  let extractedText = "";
+  const textSegments = [];
+  for (const [idx, record] of slice.entries()) {
+    const text = extractRecordText(record);
+    if (text.length === 0) continue;
+    if (textSegments.length > 0) extractedText += "\n\n";
+    const start = extractedText.length;
+    extractedText += text;
+    const end = extractedText.length;
+    textSegments.push({
+      line: startLine + idx,
+      record_sha256: sha256Text(JSON.stringify(record)),
+      char_range: [start, end],
+      extracted_text_sha256: sha256Text(text),
+      char_count: text.length,
+    });
+  }
+  return { extractedText, textSegments };
+}
+
+function sourceLineForCharRange(textSegments, charRange) {
+  const start = charRange[0];
+  const segment = textSegments.find(
+    (candidate) => start >= candidate.char_range[0] && start <= candidate.char_range[1]
+  );
+  return segment?.line || null;
+}
+
+function extractCodeCapsules(spanId, extractedText, textSegments) {
+  const capsules = [];
+  const fencePattern = /(^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)(\n\2)(?=\n|$)/g;
+  let match;
+  while ((match = fencePattern.exec(extractedText)) !== null) {
+    const blockStart = match.index + match[1].length;
+    const bodyStart = blockStart + match[2].length + match[3].length + 1;
+    const body = match[4];
+    const bodyEnd = bodyStart + body.length;
+    const language = match[3].trim().split(/\s+/).filter(Boolean)[0] || "text";
+    capsules.push({
+      id: spanId + "-code-" + String(capsules.length + 1).padStart(3, "0"),
+      source_span_id: spanId,
+      source_line: sourceLineForCharRange(textSegments, [bodyStart, bodyEnd]),
+      language,
+      char_range: [bodyStart, bodyEnd],
+      fence_char_range: [blockStart, bodyEnd + match[5].length],
+      exact_text_sha256: sha256Text(body),
+      normalized_code_sha256: sha256Text(normalizeCodeText(body)),
+      exact_text: body,
+    });
+  }
+  return capsules;
+}
+
 function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
   const spans = [];
   let spanId = 1;
   for (const [anchoredIndex, block] of allAnchoredItems(summary).entries()) {
     for (const [spanIndex, span] of (block.source_spans || []).entries()) {
       const slice = records.slice(span.start_line - 1, span.end_line);
-      const extractedText = slice
-        .map((record) => extractRecordText(record))
-        .filter((text) => text.length > 0)
-        .join("\n\n");
+      const currentSpanId = "span-" + String(spanId).padStart(4, "0");
+      const { extractedText, textSegments } = buildExtractedSpanText(slice, span.start_line);
+      const codeCapsules = extractCodeCapsules(currentSpanId, extractedText, textSegments);
       spans.push({
-        span_id: "span-" + String(spanId).padStart(4, "0"),
+        span_id: currentSpanId,
         block_index: block.summary_block_index ?? anchoredIndex,
         anchored_index: anchoredIndex,
         span_index: spanIndex,
@@ -1673,14 +1736,15 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
         authority: "raw-source",
         source_kind: "jsonl_record",
         record_range: [span.start_line, span.end_line],
+        char_range: [0, extractedText.length],
+        text_segments: textSegments,
+        code_capsules: codeCapsules,
         start_line: span.start_line,
         end_line: span.end_line,
         start_hash: lineHash(lineHashArtifacts, span.start_line),
         end_hash: lineHash(lineHashArtifacts, span.end_line),
-        raw_slice_sha256: createHash("sha256")
-          .update(slice.map((record) => JSON.stringify(record)).join("\n"))
-          .digest("hex"),
-        extracted_text_sha256: createHash("sha256").update(extractedText).digest("hex"),
+        raw_slice_sha256: sha256Text(slice.map((record) => JSON.stringify(record)).join("\n")),
+        extracted_text_sha256: sha256Text(extractedText),
         validation: "verified",
         extracted_text: extractedText,
         raw_jsonl: slice.map((record) => JSON.stringify(record)).join("\n"),
@@ -1702,11 +1766,31 @@ function renderRehydratedSummary(summary, spans) {
         " | lines " +
         span.start_line +
         "-" +
-        span.end_line
+        span.end_line +
+        " | chars " +
+        span.char_range[0] +
+        "-" +
+        span.char_range[1] +
+        " | code capsules " +
+        (span.code_capsules || []).length
     );
     lines.push("```");
     lines.push(span.extracted_text.replace(/\n$/, ""));
     lines.push("```");
+    for (const code of span.code_capsules || []) {
+      lines.push(
+        "- code " +
+          code.id +
+          " | " +
+          code.language +
+          " | chars " +
+          code.char_range[0] +
+          "-" +
+          code.char_range[1] +
+          " | exact_sha256 " +
+          code.exact_text_sha256
+      );
+    }
     lines.push("");
   }
   return lines.join("\n").trim() + "\n";
@@ -2006,6 +2090,24 @@ function buildEvidenceCapsules(rehydratedSpans) {
     authority: span.authority || "raw-source",
     source_kind: span.source_kind || "jsonl_record",
     record_range: span.record_range || [span.start_line, span.end_line],
+    char_range: span.char_range || [0, String(span.extracted_text || "").length],
+    text_segments: (span.text_segments || []).map((segment) => ({
+      line: segment.line,
+      record_sha256: segment.record_sha256,
+      char_range: segment.char_range,
+      extracted_text_sha256: segment.extracted_text_sha256,
+      char_count: segment.char_count,
+    })),
+    code_capsules: (span.code_capsules || []).map((code) => ({
+      id: code.id,
+      source_span_id: code.source_span_id,
+      source_line: code.source_line,
+      language: code.language,
+      char_range: code.char_range,
+      fence_char_range: code.fence_char_range,
+      exact_text_sha256: code.exact_text_sha256,
+      normalized_code_sha256: code.normalized_code_sha256,
+    })),
     start_line: span.start_line,
     end_line: span.end_line,
     start_hash: span.start_hash,
@@ -2072,6 +2174,20 @@ function buildHandoffState({
   };
 }
 
+function isIntegerRange(value) {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    Number.isInteger(value[0]) &&
+    Number.isInteger(value[1]) &&
+    value[0] <= value[1]
+  );
+}
+
+function isSha256Hex(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
 function validateHandoffState(state) {
   if (!state || typeof state !== "object" || Array.isArray(state)) return "handoff state is not an object";
   if (state.schema !== HANDOFF_STATE_SCHEMA) return "handoff state schema invalid";
@@ -2105,12 +2221,40 @@ function validateHandoffState(state) {
     if (!Array.isArray(capsule.record_range) || capsule.record_range.length !== 2) {
       return label + ".record_range invalid";
     }
-    if (typeof capsule.raw_slice_sha256 !== "string" || !capsule.raw_slice_sha256) {
-      return label + ".raw_slice_sha256 missing";
+    if (!isIntegerRange(capsule.char_range)) return label + ".char_range invalid";
+    if (!Array.isArray(capsule.text_segments)) return label + ".text_segments missing";
+    if (capsule.text_segments.length === 0) return label + ".text_segments empty";
+    for (const [segmentIdx, segment] of capsule.text_segments.entries()) {
+      const segmentLabel = label + ".text_segments[" + segmentIdx + "]";
+      if (!Number.isInteger(segment.line) || segment.line < 1) return segmentLabel + ".line invalid";
+      if (!isSha256Hex(segment.record_sha256)) return segmentLabel + ".record_sha256 invalid";
+      if (!isIntegerRange(segment.char_range)) return segmentLabel + ".char_range invalid";
+      if (segment.char_range[0] < capsule.char_range[0] || segment.char_range[1] > capsule.char_range[1]) {
+        return segmentLabel + ".char_range outside capsule";
+      }
+      if (!isSha256Hex(segment.extracted_text_sha256)) {
+        return segmentLabel + ".extracted_text_sha256 invalid";
+      }
     }
-    if (typeof capsule.extracted_text_sha256 !== "string" || !capsule.extracted_text_sha256) {
-      return label + ".extracted_text_sha256 missing";
+    if (!Array.isArray(capsule.code_capsules)) return label + ".code_capsules missing";
+    for (const [codeIdx, code] of capsule.code_capsules.entries()) {
+      const codeLabel = label + ".code_capsules[" + codeIdx + "]";
+      if (typeof code.id !== "string" || !code.id) return codeLabel + ".id missing";
+      if (code.source_span_id !== capsule.span_id) return codeLabel + ".source_span_id invalid";
+      if (code.source_line !== null && (!Number.isInteger(code.source_line) || code.source_line < 1)) {
+        return codeLabel + ".source_line invalid";
+      }
+      if (typeof code.language !== "string" || !code.language) return codeLabel + ".language missing";
+      if (!isIntegerRange(code.char_range)) return codeLabel + ".char_range invalid";
+      if (!isIntegerRange(code.fence_char_range)) return codeLabel + ".fence_char_range invalid";
+      if (code.char_range[0] < capsule.char_range[0] || code.char_range[1] > capsule.char_range[1]) {
+        return codeLabel + ".char_range outside capsule";
+      }
+      if (!isSha256Hex(code.exact_text_sha256)) return codeLabel + ".exact_text_sha256 invalid";
+      if (!isSha256Hex(code.normalized_code_sha256)) return codeLabel + ".normalized_code_sha256 invalid";
     }
+    if (!isSha256Hex(capsule.raw_slice_sha256)) return label + ".raw_slice_sha256 invalid";
+    if (!isSha256Hex(capsule.extracted_text_sha256)) return label + ".extracted_text_sha256 invalid";
     if (capsule.validation !== "verified") return label + ".validation invalid";
   }
   return null;
