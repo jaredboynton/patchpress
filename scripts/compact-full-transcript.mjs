@@ -2111,30 +2111,6 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
     lines.push("");
   }
 
-  if (state.rules_and_invariants.length > 0) {
-    lines.push("## Active Rules", "");
-    for (const item of state.rules_and_invariants.filter((rule) => rule.status === "current")) {
-      lines.push("- " + item.rule.trim());
-    }
-    lines.push("");
-  }
-
-  if (state.plans_and_task_state.length > 0) {
-    lines.push("## Plans And Task State", "");
-    for (const item of state.plans_and_task_state) {
-      lines.push("- [" + item.status + "] " + item.item.trim());
-    }
-    lines.push("");
-  }
-
-  if (state.promises_made.length > 0) {
-    lines.push("## Promises Made", "");
-    for (const item of state.promises_made) {
-      lines.push("- [" + item.status + "] " + item.promise.trim());
-    }
-    lines.push("");
-  }
-
   if (handoffUserMessageSelection.selected.length > 0) {
     lines.push("## User Messages", "");
     lines.push(
@@ -2151,38 +2127,6 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
       );
       lines.push("");
       pushFencedText(lines, handoffUserMessageBody(message), "text");
-      lines.push("");
-    }
-  }
-
-  if (state.evidence_capsules.length > 0) {
-    lines.push("## Evidence Capsules", "");
-    for (const capsule of state.evidence_capsules.slice(0, 40)) {
-      lines.push(
-        "- " +
-          capsule.id +
-          " | " +
-          capsule.section +
-          " | lines " +
-          capsule.record_range[0] +
-          "-" +
-          capsule.record_range[1] +
-          " | " +
-          capsule.validation
-      );
-    }
-    if (state.evidence_capsules.length > 40) {
-      lines.push("- ... " + (state.evidence_capsules.length - 40) + " more in rehydrated-spans.json");
-    }
-    lines.push("");
-  }
-
-  if (rehydratedSpans.length > 0) {
-    lines.push("## Rehydrated Evidence Preview", "");
-    for (const span of rehydratedSpans.slice(0, 5)) {
-      lines.push("### " + span.span_id + " | lines " + span.start_line + "-" + span.end_line);
-      lines.push("");
-      pushFencedText(lines, span.extracted_text.slice(0, 2400), "");
       lines.push("");
     }
   }
@@ -2629,19 +2573,7 @@ function buildCompactedTranscript({
       manifest_path: handoffManifestPath,
       state_path: handoffStatePath,
       markdown_path: handoffMdPath,
-      user_intent_events: (handoffState?.user_intent_events || []).map((event) => ({
-        id: event.id,
-        kind: event.kind,
-        status: event.status,
-        priority: event.priority,
-        supersedes: event.supersedes,
-        source: event.source,
-        text_sha256: event.text_sha256,
-        message_sha256: event.message_sha256,
-        char_count: event.char_count,
-        rendered_text: event.rendered_text,
-        text: event.text,
-      })),
+      user_intent_event_count: handoffState?.user_intent_events?.length || 0,
     },
     uuid: summaryUuid,
     timestamp: run.finishedAt,

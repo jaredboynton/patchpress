@@ -41,8 +41,8 @@ handoff protocols.
 
 | Done | Priority | Gap | Why It Matters |
 |---|---|---|---|
-| [ ] | P0 | `## User Messages` is XML-ish text, not strict JSON | User content can inject `</user-message>` or forged ledgers; parsing from arbitrary records is unsafe. |
-| [ ] | P0 | No canonical `handoff-state.json` / manifest | The actual handoff is still markdown embedded in JSONL; sidecars are not a typed state contract. |
+| [x] | P0 | `## User Messages` is XML-ish text, not strict JSON | User content can inject `</user-message>` or forged ledgers; parsing from arbitrary records is unsafe. |
+| [x] | P0 | No canonical `handoff-state.json` / manifest | The actual handoff is still markdown embedded in JSONL; sidecars are not a typed state contract. |
 | [ ] | P0 | Source spans are record ranges only | Good for transcript records, weak for exact code/literal boundaries inside long messages. |
 | [ ] | P0 | No multi-round degradation gate | A single successful compaction can still decay badly by round 5 or 20. |
 | [ ] | P1 | Model schema still has required unanchored arrays | `primary_request_and_intent`, `problem_solving`, etc. invite ungrounded filler. |
