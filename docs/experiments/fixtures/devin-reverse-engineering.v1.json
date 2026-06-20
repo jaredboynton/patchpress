@@ -1,0 +1,17 @@
+{
+  "schema": "compaction-score-fixture.v1",
+  "name": "devin reverse-engineering handoff",
+  "required_literals": [
+    "/Users/jaredboynton/__devlocal/devin-decompile/docs/03-endpoints.md",
+    "uv run",
+    "unicorn",
+    "HTTPS_PROXY",
+    "application/proto"
+  ],
+  "required_state": {
+    "min_user_intent_events": 8,
+    "min_evidence_capsules": 50,
+    "require_integrity_echo": true,
+    "require_manifest_hashes": true
+  }
+}

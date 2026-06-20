@@ -2463,6 +2463,63 @@ function pushFencedText(lines, text, info = "text") {
   lines.push(fence);
 }
 
+function pushUniqueLiteral(list, seen, value, maxLength = 180) {
+  const literal = compactText(value).slice(0, maxLength).trim();
+  if (literal.length < 2 || seen.has(literal)) return;
+  seen.add(literal);
+  list.push(literal);
+}
+
+function collectEvidenceLiterals(rehydratedSpans, pattern) {
+  const values = [];
+  const seen = new Set();
+  for (const span of rehydratedSpans || []) {
+    const text = span.extracted_text || "";
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      pushUniqueLiteral(values, seen, match[1] || match[0]);
+    }
+  }
+  return values;
+}
+
+function extractEvidenceLiteralIndex(rehydratedSpans, limit = 128) {
+  const groups = [
+    { cap: 128, values: collectEvidenceLiterals(rehydratedSpans, /^-\s+`((?:\\`|[^`]){2,220})`/gm) },
+    {
+      cap: 24,
+      values: collectEvidenceLiterals(
+        rehydratedSpans,
+        /\b(?:uv run|uv sync|python3?|\.venv\/bin\/python)[^\n`"]{0,140}/g
+      ),
+    },
+    { cap: 28, values: collectEvidenceLiterals(rehydratedSpans, /\b[A-Z][A-Z0-9_]{2,}\b/g) },
+    { cap: 16, values: collectEvidenceLiterals(rehydratedSpans, /\b[a-z]+\/[a-z0-9.+-]+\b/g) },
+    {
+      cap: 48,
+      values: collectEvidenceLiterals(
+        rehydratedSpans,
+        /(?:^|[\s("'`])((?:\/[A-Za-z0-9._~+@:%-]+)+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.@:%+-]+)(?=$|[\s)"'`,;:])/g
+      ).sort((a, b) => {
+        const absoluteDelta = Number(b.startsWith("/")) - Number(a.startsWith("/"));
+        return absoluteDelta || b.length - a.length || a.localeCompare(b);
+      }),
+    },
+    { cap: 32, values: collectEvidenceLiterals(rehydratedSpans, /`([^`\n]{2,180})`/g) },
+    { cap: 24, values: collectEvidenceLiterals(rehydratedSpans, /\b[a-z][a-z0-9_-]{6,}\b/g) },
+  ];
+  const literals = [];
+  const seen = new Set();
+  for (const group of groups) {
+    for (const literal of group.values.slice(0, group.cap)) {
+      pushUniqueLiteral(literals, seen, literal);
+      if (literals.length >= limit) return literals;
+    }
+  }
+  return literals;
+}
+
 function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedSpans, manifestPath, statePath, beforePath }) {
   const lines = [
     "# Compaction Handoff",
@@ -2503,6 +2560,15 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
       pushFencedText(lines, handoffUserMessageBody(message), "text");
       lines.push("");
     }
+  }
+
+  const evidenceLiterals = extractEvidenceLiteralIndex(rehydratedSpans);
+  if (evidenceLiterals.length > 0) {
+    lines.push("## Evidence Index", "");
+    lines.push("Verified literal strings extracted from source spans for future exact recovery.");
+    lines.push("");
+    for (const literal of evidenceLiterals) lines.push("- `" + literal.replace(/`/g, "\\`") + "`");
+    lines.push("");
   }
 
   lines.push("## Artifacts", "");
