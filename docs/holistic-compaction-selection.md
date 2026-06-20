@@ -72,13 +72,9 @@ gates until live provider runs prove retention is no worse than `stripped`.
 | Native endpoints | Provider-native opaque blobs are not portable across providers/models, so they do not satisfy the requirement to compact a Claude session with a different compaction model. |
 | Semantic judge | EXP-09 live-judged the ordered+dedup Sentinel replay with `gpt-5.5` medium reasoning: `overall_pass=true`, `validation_error=null`, 4 verdicts, `20,101` input tokens, `803` output tokens, and `156` reasoning tokens. |
 
-## Current Routing
+## Benchmark Routing
 
-Use the existing model-mix routing from `docs/model-mix-recommendation.md`:
-
-- Default quality lane: Gemini Flash.
-- Fast lane: Gemini Flash-Lite.
-- Premium recovery lane: Codex `gpt-5.4`.
+Current model routing belongs in `docs/benchmark.md`.
 
 The selected implementation changes the handoff substrate, not the model-mix
 decision. Provider selection still decides who writes the derived summary; the

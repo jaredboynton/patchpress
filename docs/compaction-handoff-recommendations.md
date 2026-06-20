@@ -20,14 +20,13 @@ The current harness already has the right foundation:
 - The model returns strict structured JSON with `summary_blocks`, `rules_and_invariants`, `plans_and_task_state`, `promises_made`, and `source_spans`.
 - The harness derives `source_lines_used`, renders `summary.md`, writes `summary.rehydrated.md`, and stores exact evidence in `rehydrated-spans.json`.
 - User-authored messages are extracted deterministically into `user-messages.json` and rendered into `after-compact.jsonl` as quoted JSON data, not model-written summary text.
-- The benchmark docs show the stripped renderer is the major token win: about 601 KB request bodies instead of about 2.57 MB raw JSONL bodies.
+- The benchmark doc records the stripped renderer token win: about 601 KB request bodies instead of about 2.57 MB raw JSONL bodies.
 
 Important local references:
 
 - `scripts/compact-full-transcript.mjs`
 - `scripts/test-handoff-user-messages.mjs`
-- `docs/phase-2-benchmark-results.md`
-- `docs/model-mix-recommendation.md`
+- `docs/benchmark.md`
 
 ## Best Handoff Protocol
 
