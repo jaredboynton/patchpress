@@ -54,7 +54,8 @@ Each run writes a canonical handoff bundle:
 - `handoff-manifest.json`: artifact paths, SHA256s, authority labels,
   sensitivity flags, provider metadata, and validation status.
 - `handoff.md`: the model-visible Markdown handoff rendered from the canonical
-  state.
+  state, including a bounded verified Evidence Index for exact literal recovery
+  across repeated compactions.
 
 `after-compact.jsonl` remains the Claude-compatible resume wrapper. Its compact
 summary record includes the rendered `handoff.md` content plus typed pointers to
@@ -71,10 +72,31 @@ Bounds:
 - `--user-message-head-chars` default `900`
 - `--user-message-tail-chars` default `900`
 
-Newest messages win when limits are hit; selected messages are rendered back in
-chronological order. The sidecar `user-messages.json` records current, carried,
-and selected messages plus the applied limits. Legacy XML user-message ledgers
-are parsed only from trusted compact summary records.
+When limits are hit, priority-aware retention keeps active safety/security
+constraints, current requests, durable preferences, and correction chains before
+low-value recency. Selected messages are rendered back in chronological order.
+The sidecar `user-messages.json` records current, carried, and selected messages
+plus the applied limits. Legacy XML user-message ledgers are parsed only from
+trusted compact summary records.
+
+### Experiment gates
+
+The current selected local implementation is the EXP-01 + EXP-03 + EXP-04 +
+EXP-05 + EXP-06 + EXP-07 stack:
+
+- typed handoff state and manifest;
+- priority-aware user-message retention;
+- char-aware evidence capsules and fenced-code capsules;
+- provider schema split from local validation;
+- multi-round 5/10/20 no-API degradation gate;
+- deterministic scorecard for integrity, state retention, exact literals,
+  unsupported high-risk literals, and footprint.
+
+Current no-API selected baseline: `23,022` estimated tokens in
+`after-compact.jsonl`, `50` evidence capsules, `1,850` text segments, `23` code
+capsules, and scorecard `100/100`. The 20-round no-tail degradation gate passes
+with `5,511` estimated tokens, `8` user intent events, `27` evidence capsules,
+no missing required literals, and scorecard `90/100`.
 
 ## Benchmark Results
 

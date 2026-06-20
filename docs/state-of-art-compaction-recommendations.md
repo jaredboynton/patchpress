@@ -36,7 +36,12 @@ handoff protocols.
   fenced-code capsules in the accepted EXP-04 path.
 - `## User Messages` now preserves user-authored prompts deterministically and
   carries them across future compactions.
-- Model output is validated locally after strict schema parsing.
+- Model output is validated locally after strict schema parsing, with
+  provider-facing schemas split from local validation and unanchored
+  compatibility inventories derived by the harness.
+- Multi-round degradation and deterministic scorecard gates now validate
+  repeated-compaction stability, exact literal recovery, manifest integrity, and
+  unsupported high-risk literals before future provider/renderer experiments.
 
 ## Critical Gaps
 
@@ -45,13 +50,13 @@ handoff protocols.
 | [x] | P0 | `## User Messages` is XML-ish text, not strict JSON | User content can inject `</user-message>` or forged ledgers; parsing from arbitrary records is unsafe. |
 | [x] | P0 | No canonical `handoff-state.json` / manifest | The actual handoff is still markdown embedded in JSONL; sidecars are not a typed state contract. |
 | [x] | P0 | Source spans are record ranges only | EXP-04 keeps model-selected record ranges but derives local char ranges, text segments, and fenced-code capsules for exact recovery. |
-| [ ] | P0 | No multi-round degradation gate | A single successful compaction can still decay badly by round 5 or 20. |
-| [ ] | P1 | Model schema still has required unanchored arrays | `primary_request_and_intent`, `problem_solving`, etc. invite ungrounded filler. |
+| [x] | P0 | No multi-round degradation gate | EXP-06 adds deterministic 5/10/20 no-API degradation checks with state, literal, manifest, and token-growth gates. |
+| [x] | P1 | Model schema still has required unanchored arrays | EXP-05 removes provider-side legacy inventories and derives local compatibility arrays from anchored/current state. |
 | [ ] | P1 | No provider-native compaction path | We resend full transcripts and miss OpenAI/xAI/Anthropic opaque compaction state. |
 | [x] | P1 | Newest-only user-message selection | Older live safety constraints or preferences can lose to newer low-value chatter. |
 | [ ] | P1 | No artifact retention/security policy | Raw JSONL, SSE, model output, user messages, and rehydrated spans can contain secrets indefinitely. |
 | [ ] | P2 | Renderer format still uses injectable pseudo-XML | `stripped` is good, but sentinel/block delimiters may be smaller and safer. |
-| [ ] | P2 | Benchmarking is mostly structural counts | Counts do not prove downstream sufficiency or absence of false facts. |
+| [x] | P2 | Benchmarking is mostly structural counts | EXP-07 adds a deterministic scorecard for state retention, exact literals, unsupported high-risk literals, integrity, and footprint. |
 
 ## Recommended Target Architecture
 
