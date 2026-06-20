@@ -16,8 +16,8 @@ function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function summaryFor(transcriptText, lineCount, label) {
-  return {
+function summaryFor(transcriptText, lineCount, label, options = {}) {
+  const summary = {
     summary_blocks: [
       {
         section: "Current State",
@@ -50,6 +50,15 @@ function summaryFor(transcriptText, lineCount, label) {
       limitations: "Synthetic test fixture.",
     },
   };
+  if (options.omitLegacyArrays) {
+    delete summary.primary_request_and_intent;
+    delete summary.key_technical_concepts;
+    delete summary.files_and_code_sections;
+    delete summary.errors_and_fixes;
+    delete summary.problem_solving;
+    delete summary.pending_tasks;
+  }
+  return summary;
 }
 
 function runCompact({ inputPath, outputPath, outDir, extraArgs = [] }) {
@@ -412,6 +421,27 @@ try {
   assert(
     priorityTexts.some((text) => text.includes("current beta task")),
     "priority handoff dropped latest current request"
+  );
+
+  const derivedInput = join(tmp, "derived.jsonl");
+  const derivedTranscript = jsonl(firstRecords);
+  await writeFile(derivedInput, derivedTranscript);
+  const derivedOutput = join(tmp, "derived-output.json");
+  await writeFile(
+    derivedOutput,
+    JSON.stringify(summaryFor(derivedTranscript, firstRecords.length, "derived", { omitLegacyArrays: true }))
+  );
+  const derivedOutDir = join(tmp, "derived-run");
+  runCompact({ inputPath: derivedInput, outputPath: derivedOutput, outDir: derivedOutDir });
+  const derivedState = await readJson(join(derivedOutDir, "handoff-state.json"));
+  const derivedSummary = await readJson(join(derivedOutDir, "summary.json"));
+  assert(Array.isArray(derivedState.primary_request_and_intent), "derived handoff primary intent missing");
+  assertEqual(derivedState.primary_request_and_intent.length, 0, "derived handoff primary intent default");
+  assert(Array.isArray(derivedState.pending_tasks), "derived handoff pending tasks missing");
+  assertEqual(derivedState.pending_tasks.length, 0, "derived handoff pending task default");
+  assert(
+    Array.isArray(derivedSummary.source_lines_used) && derivedSummary.source_lines_used.includes(1),
+    "derived summary source lines missing"
   );
   console.log("handoff user-message preservation test passed");
 } finally {

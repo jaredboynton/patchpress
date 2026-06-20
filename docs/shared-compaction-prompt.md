@@ -48,6 +48,7 @@ Compaction requirements:
 - Preserve exact symbols, command names, endpoint paths, file names, hook names, setting names, and error text when they matter.
 - Do not pin irrelevant literal wording or incidental implementation details unless they are part of a contract or a current task.
 - Do not output a user-message inventory. The harness extracts user-authored messages deterministically from the transcript.
+- Do not output compatibility inventories such as source_lines_used, primary_request_and_intent, key_technical_concepts, files_and_code_sections, errors_and_fixes, problem_solving, or pending_tasks unless the active provider schema explicitly asks for them. The harness derives those local fields from anchored sections.
 - current_work and optional_next_step must reflect the end of the transcript, not an earlier branch of work.
 - If the transcript includes an assistant mistake later corrected by the user, summarize the corrected state and mention the correction if it changes what should happen next.
 - The first summary_blocks items should establish, in order: current state, current user intent/constraints, active files/artifacts, unresolved work/next step. Put older background later.

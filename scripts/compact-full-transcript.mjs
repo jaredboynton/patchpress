@@ -182,6 +182,15 @@ const HANDOFF_USER_MESSAGE_LEDGER_VERSION = "1";
 const HANDOFF_STATE_SCHEMA = "handoff-state.v1";
 const HANDOFF_MANIFEST_SCHEMA = "handoff-manifest.v1";
 const HANDOFF_POINTER_SCHEMA = "handoff-pointer.v1";
+const LOCAL_VALIDATION_SCHEMA = "summary-local-validation.v1";
+const COMPATIBILITY_ARRAY_KEYS = [
+  "primary_request_and_intent",
+  "key_technical_concepts",
+  "files_and_code_sections",
+  "errors_and_fixes",
+  "problem_solving",
+  "pending_tasks",
+];
 
 function sha256Text(text) {
   return createHash("sha256").update(text).digest("hex");
@@ -584,6 +593,7 @@ function safeUuid() {
 
 function createSummarySchema(recordCount = 0, options = {}) {
   const includeLineBounds = options.includeLineBounds !== false;
+  const includeCompatibilityFields = options.includeCompatibilityFields === true;
   const stringArray = {
     type: "array",
     items: { type: "string" },
@@ -605,19 +615,13 @@ function createSummarySchema(recordCount = 0, options = {}) {
       end_line: lineNumber,
     },
   };
-  return {
+  const schema = {
     type: "object",
     additionalProperties: false,
     required: [
       "summary_blocks",
       "rules_and_invariants",
       "plans_and_task_state",
-      "primary_request_and_intent",
-      "key_technical_concepts",
-      "files_and_code_sections",
-      "errors_and_fixes",
-      "problem_solving",
-      "pending_tasks",
       "current_work",
       "optional_next_step",
       "promises_made",
@@ -718,24 +722,6 @@ function createSummarySchema(recordCount = 0, options = {}) {
           },
         },
       },
-      primary_request_and_intent: stringArray,
-      key_technical_concepts: stringArray,
-      files_and_code_sections: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["path", "why_it_matters", "details"],
-          properties: {
-            path: { type: "string" },
-            why_it_matters: { type: "string" },
-            details: { type: "string" },
-          },
-        },
-      },
-      errors_and_fixes: stringArray,
-      problem_solving: stringArray,
-      pending_tasks: stringArray,
       current_work: { type: "string" },
       optional_next_step: { type: "string" },
       source_integrity: {
@@ -755,6 +741,50 @@ function createSummarySchema(recordCount = 0, options = {}) {
         },
       },
     },
+  };
+  if (includeCompatibilityFields) {
+    schema.required.push(...COMPATIBILITY_ARRAY_KEYS, "source_lines_used");
+    schema.properties.primary_request_and_intent = stringArray;
+    schema.properties.key_technical_concepts = stringArray;
+    schema.properties.files_and_code_sections = {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["path", "why_it_matters", "details"],
+        properties: {
+          path: { type: "string" },
+          why_it_matters: { type: "string" },
+          details: { type: "string" },
+        },
+      },
+    };
+    schema.properties.errors_and_fixes = stringArray;
+    schema.properties.problem_solving = stringArray;
+    schema.properties.pending_tasks = stringArray;
+    schema.properties.source_lines_used = {
+      type: "array",
+      items: lineNumber,
+    };
+  }
+  return schema;
+}
+
+function createProviderSummarySchema(provider, recordCount = 0) {
+  return createSummarySchema(recordCount, {
+    includeCompatibilityFields: false,
+    // Amazon Bedrock structured outputs reject numerical constraints such as
+    // minimum/maximum. Keep line bounds as local validation only for Mantle.
+    includeLineBounds: provider !== "mantle",
+  });
+}
+
+function createLocalValidationSpec() {
+  return {
+    schema: LOCAL_VALIDATION_SCHEMA,
+    anchored_arrays: ["summary_blocks", "rules_and_invariants", "plans_and_task_state", "promises_made"],
+    derived_fields: ["source_lines_used", "source_hashes_used", ...COMPATIBILITY_ARRAY_KEYS],
+    evidence_validation: ["source_spans", "line_bounds", "hashes", "capsules"],
   };
 }
 
@@ -819,6 +849,7 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     "- Preserve exact symbols, command names, endpoint paths, file names, hook names, setting names, and error text when they matter.",
     "- Do not pin irrelevant literal wording or incidental implementation details unless they are part of a contract or a current task.",
     "- Do not output a user-message inventory. The harness extracts user-authored messages deterministically from the transcript.",
+    "- Do not output compatibility inventories such as source_lines_used, primary_request_and_intent, key_technical_concepts, files_and_code_sections, errors_and_fixes, problem_solving, or pending_tasks unless the active provider schema explicitly asks for them. The harness derives those local fields from anchored sections.",
     "- current_work and optional_next_step must reflect the end of the transcript, not an earlier branch of work.",
     "- If the transcript includes an assistant mistake later corrected by the user, summarize the corrected state and mention the correction if it changes what should happen next.",
     "- The first summary_blocks items should establish, in order: current state, current user intent/constraints, active files/artifacts, unresolved work/next step. Put older background later.",
@@ -901,7 +932,7 @@ function buildCodexRequestBody(promptText, stats) {
           type: "json_schema",
           strict: true,
           name: "claude_full_transcript_compaction",
-          schema: createSummarySchema(stats.records),
+          schema: createProviderSummarySchema(PROVIDER, stats.records),
         },
       },
       client_metadata: {
@@ -942,7 +973,7 @@ function geminiThinkingConfig(model, requestedLevel) {
 function buildGeminiRequestBody(promptText, stats) {
   const generationConfig = {
     responseMimeType: "application/json",
-    responseJsonSchema: createSummarySchema(stats.records),
+    responseJsonSchema: createProviderSummarySchema(PROVIDER, stats.records),
   };
   const thinkingConfig = geminiThinkingConfig(MODEL, GEMINI_THINKING_LEVEL);
   if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
@@ -971,11 +1002,7 @@ function buildGeminiRequestBody(promptText, stats) {
 }
 
 function buildChatCompletionsRequestBody(promptText, stats) {
-  const schema = createSummarySchema(stats.records, {
-    // Amazon Bedrock structured outputs reject numerical constraints such as
-    // minimum/maximum. Keep line bounds as local validation only for Mantle.
-    includeLineBounds: PROVIDER !== "mantle",
-  });
+  const schema = createProviderSummarySchema(PROVIDER, stats.records);
   const request = {
     body: {
       model: MODEL,
@@ -1621,6 +1648,133 @@ function normalizeLegacySummary(summary) {
     promisesMadeDefaulted = 1;
   }
   return { ruleStatusDefaulted, promisesMadeDefaulted, bulletFormatRelaxed, codeBlockDowngraded };
+}
+
+function compactText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function pushUniqueText(list, value, max = 12) {
+  const text = compactText(value);
+  if (!text || list.includes(text)) return;
+  if (list.length < max) list.push(text);
+}
+
+function anchoredTextItems(summary) {
+  const items = [];
+  for (const item of summary.rules_and_invariants || []) {
+    if (Array.isArray(item.source_spans)) items.push(item.rule);
+  }
+  for (const item of summary.plans_and_task_state || []) {
+    if (Array.isArray(item.source_spans)) items.push(item.item);
+  }
+  for (const item of summary.promises_made || []) {
+    if (Array.isArray(item.source_spans)) items.push(item.promise);
+  }
+  for (const item of summary.summary_blocks || []) {
+    if (Array.isArray(item.source_spans)) items.push(item.body);
+  }
+  return items.map(compactText).filter(Boolean);
+}
+
+function deriveKeyConcepts(texts) {
+  const concepts = [];
+  const stop = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "after",
+    "current",
+    "summary",
+    "state",
+  ]);
+  for (const text of texts) {
+    const inline = text.match(/`([^`\n]{2,80})`/g) || [];
+    for (const value of inline) pushUniqueText(concepts, value.slice(1, -1), 16);
+    const tokens = text.match(/\b[A-Za-z][A-Za-z0-9_.:/-]{2,}\b/g) || [];
+    for (const token of tokens) {
+      const normalized = token.toLowerCase();
+      if (stop.has(normalized)) continue;
+      if (!/[A-Z0-9_./:-]/.test(token) && token.length < 10) continue;
+      pushUniqueText(concepts, token, 16);
+    }
+  }
+  return concepts;
+}
+
+function deriveFileSections(texts) {
+  const sections = [];
+  const seen = new Set();
+  const pathPattern = /(?:^|[\s("'`])((?:\/[A-Za-z0-9._~+@:%-]+)+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.@:%+-]+)(?=$|[\s)"'`,;:])/g;
+  for (const text of texts) {
+    let match;
+    while ((match = pathPattern.exec(text)) !== null) {
+      const path = match[1];
+      if (seen.has(path)) continue;
+      seen.add(path);
+      sections.push({
+        path,
+        why_it_matters: "Referenced by anchored compaction state.",
+        details: text.slice(0, 240),
+      });
+      if (sections.length >= 20) return sections;
+    }
+  }
+  return sections;
+}
+
+function deriveCompatibilityFields(summary) {
+  const texts = anchoredTextItems(summary);
+  const activePlans = (summary.plans_and_task_state || []).filter((item) =>
+    ["active", "pending", "blocked"].includes(item.status)
+  );
+
+  const primary = [];
+  pushUniqueText(primary, summary.current_work, 8);
+  for (const item of activePlans) pushUniqueText(primary, item.item, 8);
+  pushUniqueText(primary, summary.optional_next_step, 8);
+
+  const pending = [];
+  for (const item of activePlans) pushUniqueText(pending, item.item, 12);
+  pushUniqueText(pending, summary.optional_next_step, 12);
+
+  const errorPattern = /\b(error|failed|failure|bug|fix|fixed|blocked|exception|regression|root cause)\b/i;
+  const solvingPattern = /\b(decision|because|root cause|discovered|verified|implemented|active|pending|blocked|next)\b/i;
+  const errors = [];
+  const solving = [];
+  for (const text of texts) {
+    if (errorPattern.test(text)) pushUniqueText(errors, text, 12);
+    if (solvingPattern.test(text)) pushUniqueText(solving, text, 12);
+  }
+  for (const item of summary.plans_and_task_state || []) pushUniqueText(solving, item.item, 12);
+
+  return {
+    primary_request_and_intent: primary,
+    key_technical_concepts: deriveKeyConcepts(texts),
+    files_and_code_sections: deriveFileSections(texts),
+    errors_and_fixes: errors,
+    problem_solving: solving,
+    pending_tasks: pending,
+  };
+}
+
+function normalizeDerivedSummaryFields(summary) {
+  const compatibilityArraysDefaulted = [];
+  const derived = deriveCompatibilityFields(summary);
+  for (const key of COMPATIBILITY_ARRAY_KEYS) {
+    if (!Array.isArray(summary[key])) compatibilityArraysDefaulted.push(key);
+    summary[key] = derived[key];
+  }
+  summary.source_lines_used = collectSourceLines(summary);
+  return {
+    compatibilityArraysDefaulted,
+    sourceLinesDerived: summary.source_lines_used.length,
+  };
 }
 
 function collectSourceLines(summary) {
@@ -2410,7 +2564,9 @@ async function buildHandoffManifest({
       provider: PROVIDER,
       model: MODEL,
       endpoint: requestMeta.endpoint,
-      schema_fingerprint: sha256Text(JSON.stringify(createSummarySchema(stats.records))),
+      schema_fingerprint: sha256Text(JSON.stringify(createProviderSummarySchema(PROVIDER, stats.records))),
+      local_validation_schema: LOCAL_VALIDATION_SCHEMA,
+      local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
       native_compaction_artifact: null,
       usage: usage || null,
     },
@@ -2852,6 +3008,11 @@ async function main() {
     provider: PROVIDER,
     endpoint,
     model: MODEL,
+    provider_schema_fingerprint: sha256Text(
+      JSON.stringify(createProviderSummarySchema(PROVIDER, stats.records))
+    ),
+    local_validation_schema: LOCAL_VALIDATION_SCHEMA,
+    local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
     service_tier: PROVIDER === "codex" ? SERVICE_TIER : null,
     reasoning_effort: PROVIDER === "codex" ? REASONING_EFFORT : null,
     temperature: TEMPERATURE,
@@ -3095,9 +3256,9 @@ async function main() {
     ? normalizeLegacySummary(summary)
     : { ruleStatusDefaulted: 0, promisesMadeDefaulted: 0, bulletFormatRelaxed: 0, codeBlockDowngraded: 0 };
 
-  // Canonicalize derived citation fields before validation so minor model
-  // omissions do not fail an otherwise grounded summary.
-  summary.source_lines_used = collectSourceLines(summary);
+  // Canonicalize local-only fields before validation. Provider schemas stay
+  // focused on anchored output; the harness derives compatibility fields.
+  const derivedSummaryNormalization = normalizeDerivedSummaryFields(summary);
 
   const validationError = validateSummary(summary, lineHashArtifacts);
   if (validationError) {
@@ -3347,6 +3508,10 @@ async function main() {
     legacy_promises_made_defaulted: legacySummaryNormalization.promisesMadeDefaulted,
     legacy_bullet_format_relaxed: legacySummaryNormalization.bulletFormatRelaxed,
     legacy_code_block_downgraded: legacySummaryNormalization.codeBlockDowngraded,
+    derived_compatibility_arrays_defaulted:
+      derivedSummaryNormalization.compatibilityArraysDefaulted.length,
+    derived_compatibility_array_keys: derivedSummaryNormalization.compatibilityArraysDefaulted,
+    derived_source_lines_used: derivedSummaryNormalization.sourceLinesDerived,
     summary_chars: summary.summary_markdown.length,
     summary_estimated_tokens: Math.ceil(summary.summary_markdown.length / 4),
     summary_block_count: summary.summary_blocks.length,
