@@ -42,7 +42,7 @@ default 16 tail records.
 | Provider fallback | `xai.grok-4.3` via Mantle | 14.74s | 601,432 | 165,298 | 1,598 | 0 | 453 | 20,232 | 2 rules, 2 plan items, 0 promises, 18 spans, 15 cited lines | pass |
 | xAI direct | `grok-4.20-0309-non-reasoning` | 19.66s | 601,488 | 164,569 | 2,476 | 0 | 845 | 20,631 | 5 rules, 5 plan items, 4 promises, 19 spans, 26 cited lines | pass |
 | xAI recovery | `grok-4.20-0309-reasoning` | 32.02s | 601,484 | 164,571 | 4,220 | 929 reasoning | 1,495 | 21,279 | 3 rules, 4 plan items, 1 promise, 19 spans, 24 cited lines | pass |
-| Premium recovery | `gpt-5.4` via Codex | 94.21s | 601,695 | 168,325 | 4,789 | 9 reasoning | 1,620 | 21,403 | 12 rules, 4 plan items, 6 promises, 55 spans, 43 cited lines | pass |
+| Premium recovery | `gpt-5.4` via Codex | 52.23s | 601,907 | 168,325 | 4,167 | 9 reasoning | 1,534 | 21,322 | 9 rules, 7 plan items, 3 promises, 50 spans, 41 cited lines | pass |
 
 Current handoff user-message ledger for this transcript: 8 selected messages, 0
 omitted, 1,582 estimated tokens, 117 rendered lines.
@@ -53,7 +53,7 @@ omitted, 1,582 estimated tokens, 117 rendered lines.
 |---|---|---|
 | Best automatic default | `gemini-3.5-flash` | Strongest default balance: good source-span density and continuation detail at 22.76s. |
 | Lowest latency | `gemini-3.1-flash-lite` medium | Fastest passing peak configuration at 6.82s. Higher thinking plus `temperature=0` was terser but did not improve retention. |
-| Highest retention | Codex `gpt-5.4` | Judge score 8.7/10; strongest deterministic retention density, but 94.21s makes it a recovery lane. |
+| Highest retention | Codex `gpt-5.4` | Strongest deterministic state coverage after the header/body rebenchmark, but 52.23s still makes it a recovery lane. |
 | Best xAI direct | `grok-4.20-0309-non-reasoning` | Better rules/plans/promises balance than the reasoning variant for less time and output. |
 | Best provider fallback | Mantle `xai.grok-4.3` | Good AWS-routed fallback, but missed promises in this benchmark. |
 

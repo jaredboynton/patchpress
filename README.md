@@ -73,7 +73,7 @@ Both runs used the same source transcript:
 
 | Provider | Model | Wall time | API input tokens | API output tokens | `summary.md` | `summary.rehydrated.md` | `after-compact.jsonl` |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Codex | `gpt-5.4`, low reasoning, priority | 145.95s | 890,616 | 5,231 | 2,168 tokens, 273.96:1 | 41,261 tokens, 14.4:1 | 20,252 tokens, 29.33:1 |
+| Codex | `gpt-5.4`, low reasoning, priority, stripped renderer | 52.23s | 168,325 | 4,167 | 1,534 tokens, 387.19:1 | 86,063 tokens, 6.9:1 | 21,322 tokens, 27.86:1 |
 | Gemini | `gemini-3.5-flash`, low thinking | 124.41s | 1,016,973 | 3,275 | 803 tokens, 739.67:1 | 22,805 tokens, 26.04:1 | 18,789 tokens, 31.61:1 |
 
 Fact retention here is measured by deterministic structural gates, not semantic
@@ -83,13 +83,14 @@ wrote rehydrated span artifacts.
 
 | Provider | Summary blocks | Current rules | Plan/state items | Rehydrated spans | Source lines cited |
 |---|---:|---:|---:|---:|---:|
-| Codex | 5 | 5 | 10 | 59 | 69 |
+| Codex | 8 | 9 | 7 | 50 | 41 |
 | Gemini | 4 | 4 | 2 | 15 | 17 |
 
 Saved reports:
 
 - `runs/compact-user-messages-live-2026-06-20/benchmark-results.md`
 - `runs/compact-gemini-35-flash-live-2026-06-20/benchmark-results.md`
+- `runs/rebenchmark-codex-gpt-54-low-stripped-2026-06-20/result.json`
 - `docs/phase-2-benchmark-results.md`
 - `docs/model-mix-recommendation.md`
 

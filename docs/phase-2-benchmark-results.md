@@ -37,7 +37,7 @@ same source transcript.
 | Bedrock Mantle | `xai.grok-4.3`, stripped renderer | pass | 14.74s | 165,298 | 1,598 | 453 tokens | 18,448 tokens | pass |
 | xAI direct | `grok-4.20-0309-non-reasoning`, temp 0, stripped renderer | pass | 19.66s | 164,569 | 2,476 | 845 tokens | 18,853 tokens | pass |
 | xAI direct | `grok-4.20-0309-reasoning`, temp 0, stripped renderer | pass | 32.02s | 164,571 | 4,220 | 1,495 tokens | 19,501 tokens | pass |
-| Codex | `gpt-5.4`, low reasoning, priority, stripped renderer | pass | 94.21s | 168,325 | 4,789 | 1,620 tokens | 19,625 tokens | pass |
+| Codex | `gpt-5.4`, low reasoning, priority, stripped renderer | pass | 52.23s | 168,325 | 4,167 | 1,534 tokens | 21,322 tokens | pass |
 
 ## Deterministic Retention Signals
 
@@ -50,15 +50,15 @@ same source transcript.
 | Bedrock Mantle | `xai.grok-4.3`, stripped renderer | 4 | 2 | 2 | 18 | 15 | 8 |
 | xAI direct | `grok-4.20-0309-non-reasoning`, temp 0, stripped renderer | 4 | 5 | 5 | 19 | 26 | 8 |
 | xAI direct | `grok-4.20-0309-reasoning`, temp 0, stripped renderer | 10 | 3 | 4 | 19 | 24 | 8 |
-| Codex | `gpt-5.4`, low reasoning, priority, stripped renderer | 5 | 12 | 4 | 55 | 43 | 8 |
+| Codex | `gpt-5.4`, low reasoning, priority, stripped renderer | 8 | 9 | 7 | 50 | 41 | 8 |
 
 ## Judge Placement
 
-The stripped GPT-5.4 Codex run is the quality leader in this benchmark set, with
-the strongest deterministic retention density: 12 current rules, 6 promises, 55
-rehydrated spans, and 43 cited source lines. It is not the automatic default
-because it took 94.21s, about 4.1x the Gemini 3.5 Flash run and 13.8x the
-Flash-Lite medium run.
+The rebenchmarked stripped GPT-5.4 Codex run remains the quality leader in this
+benchmark set by deterministic state coverage, with 9 current rules, 7 plan
+items, 3 promises, 50 rehydrated spans, and 41 cited source lines. It is not the
+automatic default because it took 52.23s, about 2.3x the Gemini 3.5 Flash run
+and 7.7x the Flash-Lite medium run.
 
 Use it as a premium recovery lane when maximum continuation fidelity is more
 important than latency. Keep Gemini 3.5 Flash as the default quality lane and
@@ -99,6 +99,8 @@ Flash-Lite medium as the fast lane.
 - `runs/phase3-xai-grok-420-reasoning-temp0-fixed-2026-06-20/summary.md`
 - `runs/phase3-codex-gpt-54-low-stripped-2026-06-20/result.json`
 - `runs/phase3-codex-gpt-54-low-stripped-2026-06-20/summary.md`
+- `runs/rebenchmark-codex-gpt-54-low-stripped-2026-06-20/result.json`
+- `runs/rebenchmark-codex-gpt-54-low-stripped-2026-06-20/summary.md`
 
 ## Reference Docs
 
