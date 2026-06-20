@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { arch, homedir, platform, release } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 
 function argValue(name, fallback = undefined) {
   const idx = process.argv.indexOf(name);
@@ -12,8 +13,10 @@ function argValue(name, fallback = undefined) {
 
 function normalizeProvider(value) {
   const provider = String(value || "codex").toLowerCase();
-  if (provider === "codex" || provider === "gemini") return provider;
-  throw new Error("Unsupported provider: " + value + " (expected codex or gemini)");
+  if (provider === "codex" || provider === "gemini" || provider === "xai" || provider === "mantle") {
+    return provider;
+  }
+  throw new Error("Unsupported provider: " + value + " (expected codex, gemini, xai, or mantle)");
 }
 
 const PROVIDER = normalizeProvider(
@@ -22,19 +25,35 @@ const PROVIDER = normalizeProvider(
 const CODEX_RESPONSES_URL =
   process.env.CODEX_RESPONSES_URL || "https://chatgpt.com/backend-api/codex/responses";
 const AUTH_PATH = process.env.CODEX_AUTH_JSON || join(homedir(), ".codex", "auth.json");
+const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
+const CODEX_INSTALLATION_ID_PATH =
+  process.env.CODEX_INSTALLATION_ID_PATH || join(CODEX_HOME, "installation_id");
+const CODEX_ORIGINATOR = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || "codex_cli_rs";
+const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || resolveCodexClientVersion();
+const CODEX_USER_AGENT = process.env.CODEX_USER_AGENT || buildCodexUserAgent();
 const GEMINI_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "";
 const GEMINI_API_BASE_URL =
   process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
+const XAI_API_KEY = process.env.XAI_API_KEY || "";
+const XAI_API_BASE_URL = process.env.XAI_API_BASE_URL || "https://api.x.ai/v1";
+const MANTLE_API_KEY = process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || "";
+const MANTLE_CHAT_COMPLETIONS_URL =
+  process.env.MANTLE_CHAT_COMPLETIONS_URL ||
+  "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions";
 const DEFAULT_INPUT = "transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl";
 const MODEL =
   argValue("--model") ||
   process.env.COMPACT_MODEL ||
   (PROVIDER === "gemini"
     ? process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash"
-    : process.env.CODEX_COMPACT_MODEL || "gpt-5.4");
+    : PROVIDER === "xai"
+      ? process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning"
+      : PROVIDER === "mantle"
+        ? process.env.MANTLE_COMPACT_MODEL || "xai.grok-4.3"
+        : process.env.CODEX_COMPACT_MODEL || "gpt-5.4");
 const SERVICE_TIER = process.env.CODEX_COMPACT_SERVICE_TIER || "priority";
 const REASONING_EFFORT = process.env.CODEX_COMPACT_REASONING_EFFORT || "low";
-const GEMINI_THINKING_LEVEL = process.env.GEMINI_COMPACT_THINKING_LEVEL || "low";
+const GEMINI_THINKING_LEVEL = process.env.GEMINI_COMPACT_THINKING_LEVEL || "none";
 const GEMINI_MAX_OUTPUT_TOKENS = Number.parseInt(
   process.env.GEMINI_COMPACT_MAX_OUTPUT_TOKENS || "65536",
   10
@@ -50,22 +69,116 @@ function intArg(name, fallback) {
   return parsed;
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
+function resolveCodexInstallationId() {
+  try {
+    const existing = readFileSync(CODEX_INSTALLATION_ID_PATH, "utf8").trim();
+    if (isUuid(existing)) return existing.toLowerCase();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const installationId = randomUUID();
+  mkdirSync(dirname(CODEX_INSTALLATION_ID_PATH), { recursive: true });
+  writeFileSync(CODEX_INSTALLATION_ID_PATH, installationId, { mode: 0o644 });
+  return installationId;
+}
+
+function commandOutput(command, args) {
+  try {
+    return execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function parseVersion(value) {
+  return String(value || "").match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] || "";
+}
+
+function resolveCodexClientVersion() {
+  const cliVersion = parseVersion(commandOutput("codex", ["--version"]));
+  if (cliVersion) return cliVersion;
+  try {
+    const cached = JSON.parse(readFileSync(join(CODEX_HOME, "version.json"), "utf8"));
+    const cachedVersion = parseVersion(cached.latest_version);
+    if (cachedVersion) return cachedVersion;
+  } catch {
+    // Fall through to a syntactically valid development version.
+  }
+  return "0.0.0";
+}
+
+function codexArchitecture() {
+  const value = arch();
+  if (value === "x64") return "x86_64";
+  return value || "unknown";
+}
+
+function codexOsDescription() {
+  if (platform() === "darwin") {
+    const macVersion = commandOutput("sw_vers", ["-productVersion"]);
+    return "Mac OS " + (macVersion || release());
+  }
+  return platform() + " " + release();
+}
+
+function buildCodexUserAgent() {
+  const reqwestVersion = process.env.CODEX_REQWEST_VERSION || "0.12.28";
+  return (
+    CODEX_ORIGINATOR +
+    "/" +
+    CODEX_CLIENT_VERSION +
+    " (" +
+    codexOsDescription() +
+    "; " +
+    codexArchitecture() +
+    ") reqwest/" +
+    reqwestVersion
+  );
+}
+
 const inputPath = resolve(argValue("--input", DEFAULT_INPUT));
 const preserveTailCount = intArg("--preserve-tail", 16);
 const dryRun = process.argv.includes("--dry-run");
 const liveOutput = !process.argv.includes("--no-live-output");
+const dumpPromptPath = argValue("--dump-prompt", "");
+const temperatureRaw = argValue("--temperature", process.env.COMPACT_TEMPERATURE || "");
+const TEMPERATURE = temperatureRaw === "" ? null : Number.parseFloat(temperatureRaw);
+if (temperatureRaw !== "" && !Number.isFinite(TEMPERATURE)) {
+  throw new Error("Expected --temperature to be a finite number");
+}
 const customSummaryInstructions = argValue("--summary-instructions", "");
 const compactAndPrompt = argValue("--compact-and", "");
 const fromOutputPath = argValue("--from-output", "");
 const userMessageCollapseAt = intArg("--user-message-collapse-at", 2400);
 const userMessageHeadChars = intArg("--user-message-head-chars", 900);
 const userMessageTailChars = intArg("--user-message-tail-chars", 900);
+const handoffUserMessageLimit = intArg("--handoff-user-message-limit", 64);
+const handoffUserMessageTokenBudget = intArg("--handoff-user-message-token-budget", 8000);
+const handoffUserMessageLineLimit = intArg("--handoff-user-message-line-limit", 300);
+const transcriptRenderer = argValue(
+  "--transcript-renderer",
+  process.env.COMPACT_TRANSCRIPT_RENDERER || "stripped"
+);
+if (transcriptRenderer !== "stripped" && transcriptRenderer !== "jsonl") {
+  throw new Error("Expected --transcript-renderer to be stripped or jsonl");
+}
 const startedAt = new Date();
 const defaultOutDir = join(
   "runs",
   "compact-" + startedAt.toISOString().replace(/[:.]/g, "-")
 );
 const outDir = resolve(argValue("--out-dir", defaultOutDir));
+const HANDOFF_USER_MESSAGE_LEDGER_VERSION = "1";
 
 async function loadChatgptAuth() {
   const raw = await readFile(AUTH_PATH, "utf8");
@@ -123,7 +236,70 @@ function previewRecord(line) {
   }
 }
 
-function buildRecordArtifacts(transcript) {
+function renderPartForPrompt(part) {
+  if (!part || typeof part !== "object") return "";
+  if (typeof part.text === "string") return part.text;
+  if (typeof part.content === "string") return part.content;
+  if (part.type === "tool_use") {
+    const name = part.name || "unknown";
+    const input =
+      part.input && typeof part.input === "object" ? JSON.stringify(part.input) : String(part.input || "");
+    return "[tool_use name=" + name + "]\n" + input;
+  }
+  if (part.type === "tool_result") {
+    const content = Array.isArray(part.content)
+      ? part.content
+          .map((item) =>
+            typeof item === "string"
+              ? item
+              : typeof item?.text === "string"
+                ? item.text
+                : typeof item?.content === "string"
+                  ? item.content
+                  : ""
+          )
+          .filter(Boolean)
+          .join("\n")
+      : typeof part.content === "string"
+        ? part.content
+        : "";
+    return "[tool_result]\n" + content;
+  }
+  return "";
+}
+
+function recordTextForPrompt(record) {
+  const content = record?.message?.content ?? record?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(renderPartForPrompt).filter(Boolean).join("\n\n");
+}
+
+function renderStrippedRecord(entry) {
+  let record;
+  try {
+    record = JSON.parse(entry.raw);
+  } catch {
+    return (
+      '<record line="' +
+      String(entry.lineNumber).padStart(6, "0") +
+      '" kind="unparsed">\n' +
+      entry.raw +
+      "\n</record>"
+    );
+  }
+  const attrs = [
+    'line="' + String(entry.lineNumber).padStart(6, "0") + '"',
+    'type="' + String(record.type || "unknown").replace(/"/g, "'") + '"',
+  ];
+  if (record.message?.role) attrs.push('role="' + String(record.message.role).replace(/"/g, "'") + '"');
+  if (record.timestamp) attrs.push('timestamp="' + String(record.timestamp).replace(/"/g, "'") + '"');
+  const text = recordTextForPrompt(record).trim();
+  const body = text || entry.preview || "[no textual content extracted]";
+  return "<record " + attrs.join(" ") + ">\n" + body + "\n</record>";
+}
+
+function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
   const lines = logicalJsonlLines(transcript);
   const entries = lines.map((line, idx) => {
     let searchableText = line;
@@ -152,6 +328,7 @@ function buildRecordArtifacts(transcript) {
     entries
       .map((entry) => {
         const line = String(entry.lineNumber).padStart(6, "0");
+        if (renderer === "stripped") return renderStrippedRecord(entry);
         return '<record line="' + line + '">' + entry.raw + "</record>";
       })
       .join("\n") + "\n";
@@ -213,14 +390,94 @@ function extractUserMessages(records, lineHashArtifacts) {
     messages.push({
       line,
       uuid: record.uuid || null,
+      originalUuid: record.originalUuid || null,
       parentUuid: record.parentUuid || null,
       timestamp: record.timestamp || null,
+      source: "current",
       sha256: createHash("sha256").update(text).digest("hex"),
       record_sha256: lineHash(lineHashArtifacts, line) || null,
       char_count: text.length,
       text,
     });
   });
+  return messages;
+}
+
+function recordTextContent(record) {
+  const content = record?.message?.content ?? record?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.content === "string") return part.content;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function nullableInt(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function unescapeXmlAttr(value) {
+  return String(value)
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function parseXmlAttrs(rawAttrs) {
+  const attrs = {};
+  const attrRe = /([A-Za-z0-9_:-]+)="([^"]*)"/g;
+  let match;
+  while ((match = attrRe.exec(rawAttrs))) {
+    attrs[match[1]] = unescapeXmlAttr(match[2]);
+  }
+  return attrs;
+}
+
+function extractCarriedHandoffUserMessages(records) {
+  const messages = [];
+  for (const [recordIndex, record] of records.entries()) {
+    const text = recordTextContent(record);
+    if (!text.includes("<user-message-ledger")) continue;
+    const ledgerRe = /<user-message-ledger\b[^>]*>([\s\S]*?)<\/user-message-ledger>/g;
+    let ledgerMatch;
+    while ((ledgerMatch = ledgerRe.exec(text))) {
+      const ledgerBody = ledgerMatch[1];
+      const messageRe = /<user-message\b([^>]*)>\n?([\s\S]*?)\n?<\/user-message>/g;
+      let messageMatch;
+      while ((messageMatch = messageRe.exec(ledgerBody))) {
+        const attrs = parseXmlAttrs(messageMatch[1]);
+        const renderedText = messageMatch[2].trim();
+        const line = nullableInt(attrs.line) ?? nullableInt(attrs.original_line) ?? recordIndex + 1;
+        messages.push({
+          source: "carried",
+          line,
+          original_line: nullableInt(attrs.original_line) ?? line,
+          uuid: attrs.uuid || null,
+          originalUuid: attrs.original_uuid || null,
+          parentUuid: null,
+          timestamp: attrs.timestamp || null,
+          sha256:
+            attrs.sha256 ||
+            attrs.text_sha256 ||
+            createHash("sha256").update(renderedText).digest("hex"),
+          record_sha256: attrs.record_sha256 || null,
+          source_transcript_sha256: attrs.source_transcript_sha256 || null,
+          char_count: nullableInt(attrs.chars) ?? renderedText.length,
+          text: renderedText,
+          rendered_text: renderedText,
+        });
+      }
+    }
+  }
   return messages;
 }
 
@@ -239,7 +496,7 @@ function pickBaseMetadata(records) {
 
 function compactBaseMetadata(metadata) {
   const base = {};
-  for (const [key, value] of Object.entries(metadata)) {
+  for (const [key, value] of Object.entries(metadata || {})) {
     if (value !== undefined) base[key] = value;
   }
   return base;
@@ -257,17 +514,20 @@ function safeUuid() {
   return randomUUID();
 }
 
-function createSummarySchema(recordCount = 0) {
+function createSummarySchema(recordCount = 0, options = {}) {
+  const includeLineBounds = options.includeLineBounds !== false;
   const stringArray = {
     type: "array",
     items: { type: "string" },
   };
   const lineNumber = {
     type: "integer",
-    minimum: 1,
-    maximum: recordCount || 1000000000,
     description: "One-based logical JSONL record number from the <record line=...> wrapper.",
   };
+  if (includeLineBounds) {
+    lineNumber.minimum = 1;
+    lineNumber.maximum = recordCount || 1000000000;
+  }
   const sourceSpan = {
     type: "object",
     additionalProperties: false,
@@ -292,7 +552,7 @@ function createSummarySchema(recordCount = 0) {
       "pending_tasks",
       "current_work",
       "optional_next_step",
-      "source_lines_used",
+      "promises_made",
       "source_integrity",
     ],
     properties: {
@@ -302,21 +562,17 @@ function createSummarySchema(recordCount = 0) {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["section", "format", "language", "body", "source_spans"],
+          required: ["section", "format", "body", "source_spans"],
           properties: {
             section: { type: "string" },
             format: {
               type: "string",
-              enum: ["paragraph", "bullet", "code_block"],
-            },
-            language: {
-              type: "string",
-              description: "Optional code fence language for code_block items. Empty string is allowed.",
+              enum: ["paragraph", "bullet"],
             },
             body: {
               type: "string",
               description:
-                "Rendered summary content for this block. For code_block items, this is an exact-display fallback only; the harness prefers verbatim rehydration from source_spans instead of trusting body.",
+                "Rendered summary content for this block. Bullet bodies must be a single item without a leading bullet marker.",
             },
             source_spans: {
               type: "array",
@@ -353,7 +609,7 @@ function createSummarySchema(recordCount = 0) {
       plans_and_task_state: {
         type: "array",
         description:
-          "Active plans, task state, benchmark state, open artifacts, and concrete next actions that should remain visible after compaction.",
+          "Active plans, task state, benchmark state, open artifacts, open questions, blockers, and concrete next actions that should remain visible after compaction. Order active and pending work by priority.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -363,6 +619,28 @@ function createSummarySchema(recordCount = 0) {
             status: {
               type: "string",
               enum: ["done", "active", "pending", "blocked", "superseded"],
+            },
+            source_spans: {
+              type: "array",
+              minItems: 1,
+              items: sourceSpan,
+            },
+          },
+        },
+      },
+      promises_made: {
+        type: "array",
+        description:
+          "Explicit commitments or promises made to the user that should survive compaction, including whether they are done, active, pending, blocked, superseded, or removed.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["promise", "status", "source_spans"],
+          properties: {
+            promise: { type: "string" },
+            status: {
+              type: "string",
+              enum: ["done", "active", "pending", "blocked", "superseded", "removed"],
             },
             source_spans: {
               type: "array",
@@ -392,10 +670,6 @@ function createSummarySchema(recordCount = 0) {
       pending_tasks: stringArray,
       current_work: { type: "string" },
       optional_next_step: { type: "string" },
-      source_lines_used: {
-        type: "array",
-        items: lineNumber,
-      },
       source_integrity: {
         type: "object",
         additionalProperties: false,
@@ -435,13 +709,11 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
   return [
     "You are a compaction model for Claude Code session transcripts.",
     "Your job is to produce a fresh summarized starting point for continued work after compaction.",
-    "Optimize for the very next follow-up prompt, as if the user will continue immediately after this summary.",
+    "Optimize for the very next follow-up prompt, including any queued follow-up supplied with this request.",
     "Treat this as a continuation handoff, not a retrospective summary.",
-    "Assume long conversations may have already been partially summarized upstream; preserve the active working set and compress older material aggressively.",
+    "Preserve the active working set and compress older material aggressively.",
     "",
     "Critical shape requirement:",
-    "- You will receive the full JSONL transcript in one piece.",
-    "- Do not ask for chunks.",
     "- Do not omit late-session state.",
     "- Treat later user messages as more important than earlier abandoned plans.",
     "- If older context and late-session state conflict, prefer the corrected late-session state and explain only the delta that still matters.",
@@ -451,37 +723,32 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     ...compactAndBlock,
     "",
     "Evidence span format:",
-    "- The transcript is wrapped as <record line=\"000001\">JSONL</record>.",
+    "- The transcript is wrapped as <record line=\"000001\">...</record>.",
     "- Use one-based logical JSONL record numbers from those wrappers for every source span.",
-    "- Do not emit hashes, placeholders, or fake citation markers in the summary.",
     "- summary_blocks is the primary structured output. It must be ordered exactly as the continuation summary should read.",
     "- Every summary_blocks item must include one or more source_spans pointing to the exact supporting record ranges.",
     "- The authoritative source record is the cited source_spans plus harness rehydration, not long verbatim body text.",
     "- Do not copy large verbatim transcript excerpts into the JSON response. The harness will extract exact record content itself from the selected source spans.",
-    "- For code_block items, treat source_spans as the source of truth. Use code_block only when the selected span is the exact contiguous content that should be shown verbatim, or as close as the record boundaries allow.",
-    "- For code_block items, prefer a single narrow contiguous source span whenever practical.",
-    "- For code_block items, body is an exact-display fallback field, not a summarization field. Do not paraphrase, normalize, rewrite, or synthesize code, config, commands, or error text in body.",
-    "- For code_block items, leave body empty or use only a very short label unless fallback text is unavoidable.",
-    "- If you cannot point to the exact contiguous source text for a code_block, do not fake it. Emit a paragraph or bullet summary instead.",
-    "- Hashes are integrity metadata for the harness only. Never surface them as user-facing prose.",
-    "- If exact code, commands, hooks, config, or error text matter, keep body empty or extremely terse and rely on narrow source_spans for lossless recovery.",
-    "- source_lines_used is a derived field. You may leave it empty, but if you populate it, it must include every distinct start_line/end_line referenced anywhere in source_spans.",
+    "- Do not emit verbatim code/config/command blocks in summary_blocks. Summarize them and cite the exact source spans; the harness preserves verbatim evidence separately.",
+    "- Bullet bodies must be a single item and must not include a leading bullet marker.",
     "- source_integrity.verbatim_span_grounded must be true.",
     "",
     "Compaction requirements:",
     "- The harness will render the final markdown summary from summary_blocks and separately emit a rehydrated evidence view from source_spans.",
     "- Prioritize continuation utility over historical exhaustiveness.",
-    "- Think in two bands: active context and archived context. Active context is what the next agent needs immediately; archived context is only the minimum older material still needed to avoid repeating mistakes or losing commitments.",
+    "- Organize content around: task overview, current state, important discoveries, next steps, and context to preserve.",
+    "- Think in two bands: active context and archived context. Active context is what the next agent needs immediately; archived context is only older material needed to avoid repeated mistakes or lost commitments.",
     "- Keep abandoned branches brief unless they still constrain current work, explain a bug, or explain why a later correction matters.",
-    "- Prefer durable state over chronology: capture decisions, invariants, open tasks, exact artifacts, and unresolved blockers before narrating what happened.",
+    "- Preserve failed approaches only when they prevent repeated work or explain a current constraint.",
+    "- Prefer durable state over chronology: capture decisions, invariants, open tasks, exact artifacts, open questions, and unresolved blockers before narrating what happened.",
     "- Prefer block-style handoff sections over a play-by-play timeline.",
-    "- Prefer a summary a strong coding agent could continue from immediately without reopening the whole transcript.",
-    "- Preserve explicit user instructions, constraints, file paths, commands, errors, pending work, and security-relevant instructions.",
+    "- A fresh agent should know the current objective, active artifacts, user preferences, domain-specific context, constraints, blockers, and next command or check.",
+    "- Preserve explicit user instructions, constraints, file paths, commands, errors, pending work, and security-relevant instructions. Preserve security-relevant user constraints verbatim.",
     "- Put durable user/system/project rules in rules_and_invariants. Do not bury them only in generic prose.",
     "- If a later user message removes or supersedes an earlier rule, mark that rule status as removed or superseded. Do not present removed or superseded rules as live instructions.",
-    "- Put active plans, benchmark status, open artifacts, and concrete next actions in plans_and_task_state. Do not make the next agent infer them from chronology.",
+    "- Put active plans, benchmark status, open artifacts, open questions, blockers, and concrete next actions in plans_and_task_state, ordered by priority.",
+    "- Put explicit commitments or promises made to the user in promises_made, with status.",
     "- Preserve exact symbols, command names, endpoint paths, file names, hook names, setting names, and error text when they matter.",
-    "- Use code_block items only for exact code, commands, config, or error text that the next turn is likely to need directly. Prefer fewer, higher-value code blocks over broad transcript copying.",
     "- Do not pin irrelevant literal wording or incidental implementation details unless they are part of a contract or a current task.",
     "- Do not output a user-message inventory. The harness extracts user-authored messages deterministically from the transcript.",
     "- current_work and optional_next_step must reflect the end of the transcript, not an earlier branch of work.",
@@ -496,12 +763,13 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     "- sha256: " + stats.sha256,
     "- bytes: " + stats.bytes,
     "- logical JSONL records: " + stats.records,
+    "- prompt transcript renderer: " + stats.transcriptRenderer,
     "- approximate char_div_4 tokens: " + stats.approxTokens,
     "- observed user record count estimate: " + stats.userRecords,
     "",
-    "<transcript_jsonl>",
+    "<transcript>",
     wrappedTranscript,
-    "</transcript_jsonl>",
+    "</transcript>",
   ].join("\n");
 }
 
@@ -513,6 +781,7 @@ function buildSharedPromptMarkdown() {
       sha256: "{{TRANSCRIPT_SHA256}}",
       bytes: "{{TRANSCRIPT_BYTES}}",
       records: "{{TRANSCRIPT_RECORDS}}",
+      transcriptRenderer: "{{TRANSCRIPT_RENDERER}}",
       approxTokens: "{{APPROX_CHAR_DIV_4_TOKENS}}",
       userRecords: "{{USER_RECORD_COUNT}}",
     },
@@ -535,9 +804,10 @@ function buildSharedPromptMarkdown() {
 function buildCodexRequestBody(promptText, stats) {
   const sessionId = randomUUID();
   const threadId = randomUUID();
-  const installationId = randomUUID();
-  return {
-    ids: { sessionId, threadId, installationId },
+  const windowId = `${threadId}:0`;
+  const installationId = resolveCodexInstallationId();
+  const request = {
+    ids: { sessionId, threadId, windowId, installationId },
     body: {
       model: MODEL,
       instructions:
@@ -552,7 +822,7 @@ function buildCodexRequestBody(promptText, stats) {
       tools: [],
       tool_choice: "auto",
       parallel_tool_calls: false,
-      reasoning: { effort: REASONING_EFFORT, summary: "auto" },
+      reasoning: { effort: REASONING_EFFORT },
       store: false,
       stream: true,
       include: ["reasoning.encrypted_content"],
@@ -567,6 +837,10 @@ function buildCodexRequestBody(promptText, stats) {
         },
       },
       client_metadata: {
+        "x-codex-installation-id": installationId,
+        "x-codex-window-id": windowId,
+        session_id: sessionId,
+        thread_id: threadId,
         codex_harness: "claudecompact-patcher",
         request_kind: "full_transcript_compaction",
         transcript_sha256: stats.sha256,
@@ -574,16 +848,37 @@ function buildCodexRequestBody(promptText, stats) {
       },
     },
   };
+  return request;
+}
+
+function geminiThinkingConfig(model, requestedLevel) {
+  const requested = String(requestedLevel || "none").trim().toLowerCase();
+  const normalizedModel = String(model || "").toLowerCase();
+  const isOff = requested === "none" || requested === "off" || requested === "disabled";
+  if (!isOff) return { thinkingLevel: requested };
+
+  // Gemini 3.x Flash/Flash-Lite use thinkingLevel and only support "minimal"
+  // as the closest setting to off.
+  if (
+    normalizedModel.includes("3.") ||
+    normalizedModel === "gemini-flash-latest" ||
+    normalizedModel === "gemini-flash-lite-latest"
+  ) {
+    return { thinkingLevel: "minimal" };
+  }
+
+  // Older non-thinking Flash lines do not need a thinkingConfig.
+  return null;
 }
 
 function buildGeminiRequestBody(promptText, stats) {
   const generationConfig = {
     responseMimeType: "application/json",
     responseJsonSchema: createSummarySchema(stats.records),
-    thinkingConfig: {
-      thinkingLevel: GEMINI_THINKING_LEVEL,
-    },
   };
+  const thinkingConfig = geminiThinkingConfig(MODEL, GEMINI_THINKING_LEVEL);
+  if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
+  if (TEMPERATURE !== null) generationConfig.temperature = TEMPERATURE;
   if (Number.isFinite(GEMINI_MAX_OUTPUT_TOKENS) && GEMINI_MAX_OUTPUT_TOKENS > 0) {
     generationConfig.maxOutputTokens = GEMINI_MAX_OUTPUT_TOKENS;
   }
@@ -607,8 +902,55 @@ function buildGeminiRequestBody(promptText, stats) {
   };
 }
 
+function buildChatCompletionsRequestBody(promptText, stats) {
+  const schema = createSummarySchema(stats.records, {
+    // Amazon Bedrock structured outputs reject numerical constraints such as
+    // minimum/maximum. Keep line bounds as local validation only for Mantle.
+    includeLineBounds: PROVIDER !== "mantle",
+  });
+  const request = {
+    body: {
+      model: MODEL,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a transcript compaction engine. Output only strict JSON matching the requested schema.",
+        },
+        {
+          role: "user",
+          content: promptText,
+        },
+      ],
+      stream: true,
+      stream_options: {
+        include_usage: true,
+      },
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "claude_full_transcript_compaction",
+          strict: true,
+          schema,
+        },
+      },
+      metadata: {
+        codex_harness: "claudecompact-patcher",
+        request_kind: "full_transcript_compaction",
+        transcript_sha256: stats.sha256,
+        transcript_records: String(stats.records),
+      },
+    },
+  };
+  if (TEMPERATURE !== null) {
+    request.body.temperature = TEMPERATURE;
+  }
+  return request;
+}
+
 function buildRequestBody(promptText, stats) {
   if (PROVIDER === "gemini") return buildGeminiRequestBody(promptText, stats);
+  if (PROVIDER === "xai" || PROVIDER === "mantle") return buildChatCompletionsRequestBody(promptText, stats);
   return buildCodexRequestBody(promptText, stats);
 }
 
@@ -621,6 +963,8 @@ function providerEndpoint() {
       ":streamGenerateContent?alt=sse"
     );
   }
+  if (PROVIDER === "xai") return XAI_API_BASE_URL.replace(/\/$/, "") + "/chat/completions";
+  if (PROVIDER === "mantle") return MANTLE_CHAT_COMPLETIONS_URL;
   return CODEX_RESPONSES_URL;
 }
 
@@ -631,8 +975,15 @@ function redactCodexRequestForLog(request, stats) {
     headers: {
       Authorization: "Bearer <redacted>",
       "ChatGPT-Account-Id": "<redacted>",
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": CODEX_USER_AGENT,
       Accept: "text/event-stream",
       "Content-Type": "application/json",
+      "session-id": request.ids.sessionId,
+      "thread-id": request.ids.threadId,
+      "x-client-request-id": request.ids.threadId,
+      "x-codex-installation-id": request.ids.installationId,
+      "x-codex-window-id": request.ids.windowId,
     },
     body: {
       ...request.body,
@@ -693,8 +1044,42 @@ function redactGeminiRequestForLog(request, stats) {
   };
 }
 
+function redactChatCompletionsRequestForLog(request, stats) {
+  return {
+    url: providerEndpoint(),
+    method: "POST",
+    headers: {
+      Authorization: "Bearer <redacted>",
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: {
+      ...request.body,
+      messages: request.body.messages.map((message) =>
+        message.role === "user"
+          ? {
+              ...message,
+              content:
+                "<full transcript omitted from redacted request; see before transcript artifact> " +
+                JSON.stringify({
+                  inputPath: stats.inputPath,
+                  sha256: stats.sha256,
+                  bytes: stats.bytes,
+                  records: stats.records,
+                  approxTokens: stats.approxTokens,
+                }),
+            }
+          : message
+      ),
+    },
+  };
+}
+
 function redactRequestForLog(request, stats) {
   if (PROVIDER === "gemini") return redactGeminiRequestForLog(request, stats);
+  if (PROVIDER === "xai" || PROVIDER === "mantle") {
+    return redactChatCompletionsRequestForLog(request, stats);
+  }
   return redactCodexRequestForLog(request, stats);
 }
 
@@ -786,6 +1171,26 @@ function codexDeltaText(event) {
     : "";
 }
 
+function chatCompletionsDeltaText(event) {
+  let text = "";
+  for (const choice of event?.choices || []) {
+    const delta = choice.delta?.content;
+    if (typeof delta === "string") text += delta;
+    else if (Array.isArray(delta)) {
+      for (const part of delta) {
+        if (typeof part?.text === "string") text += part.text;
+      }
+    }
+  }
+  return text;
+}
+
+function collectChatCompletionsOutputText(events) {
+  let text = "";
+  for (const event of events) text += chatCompletionsDeltaText(event);
+  return text.trim();
+}
+
 function streamAdapter() {
   if (PROVIDER === "gemini") {
     return {
@@ -797,6 +1202,19 @@ function streamAdapter() {
       failureError: (event) => event?.error || event,
       usage: (events) => [...events].reverse().find((event) => event?.usageMetadata)?.usageMetadata ?? null,
       responseId: () => null,
+    };
+  }
+  if (PROVIDER === "xai" || PROVIDER === "mantle") {
+    return {
+      deltaText: chatCompletionsDeltaText,
+      collectOutputText: collectChatCompletionsOutputText,
+      isCompleted: (event) =>
+        event?.type === "done_sentinel" ||
+        (event?.choices || []).some((choice) => typeof choice.finish_reason === "string"),
+      isFailure: (event) => Boolean(event?.error),
+      failureError: (event) => event?.error || event,
+      usage: (events) => [...events].reverse().find((event) => event?.usage)?.usage ?? null,
+      responseId: (events) => events.find((event) => typeof event?.id === "string")?.id ?? null,
     };
   }
   return {
@@ -985,6 +1403,7 @@ function validateSummary(value, lineHashArtifacts) {
     "errors_and_fixes",
     "problem_solving",
     "pending_tasks",
+    "promises_made",
     "source_lines_used",
   ];
   for (const key of requiredArrays) {
@@ -1037,14 +1456,22 @@ function validateSummary(value, lineHashArtifacts) {
     if (typeof item.section !== "string" || item.section.trim().length === 0) {
       return "summary_blocks[" + idx + "].section missing";
     }
-    if (!["paragraph", "bullet", "code_block"].includes(item.format)) {
+    if (!["paragraph", "bullet"].includes(item.format)) {
       return "summary_blocks[" + idx + "].format invalid";
     }
     if (typeof item.body !== "string") {
       return "summary_blocks[" + idx + "].body missing";
     }
-    if (item.format !== "code_block" && item.body.trim().length === 0) {
+    if (item.body.trim().length === 0) {
       return "summary_blocks[" + idx + "].body missing";
+    }
+    if (item.format === "bullet") {
+      if (/^\s*[-*]\s+/.test(item.body)) {
+        return "summary_blocks[" + idx + "].body must not include a leading bullet marker";
+      }
+      if (item.body.includes("\n")) {
+        return "summary_blocks[" + idx + "].body must be a single bullet item";
+      }
     }
     const sourceSpanError = validateSourceSpans("summary_blocks[" + idx + "]", item.source_spans);
     if (sourceSpanError) return sourceSpanError;
@@ -1075,6 +1502,19 @@ function validateSummary(value, lineHashArtifacts) {
     const sourceSpanError = validateSourceSpans("plans_and_task_state[" + idx + "]", item.source_spans);
     if (sourceSpanError) return sourceSpanError;
   }
+  for (const [idx, item] of value.promises_made.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return "promises_made[" + idx + "] is not an object";
+    }
+    if (typeof item.promise !== "string" || item.promise.trim().length === 0) {
+      return "promises_made[" + idx + "].promise missing";
+    }
+    if (!["done", "active", "pending", "blocked", "superseded", "removed"].includes(item.status)) {
+      return "promises_made[" + idx + "].status invalid";
+    }
+    const sourceSpanError = validateSourceSpans("promises_made[" + idx + "]", item.source_spans);
+    if (sourceSpanError) return sourceSpanError;
+  }
   for (const line of value.source_lines_used) {
     if (!Number.isInteger(line)) return "source_lines_used contains non-integer line: " + line;
     if (line < 1 || line > maxLine) return "source_lines_used contains out-of-range line: " + line;
@@ -1084,13 +1524,35 @@ function validateSummary(value, lineHashArtifacts) {
 
 function normalizeLegacySummary(summary) {
   let ruleStatusDefaulted = 0;
+  let promisesMadeDefaulted = 0;
+  let bulletFormatRelaxed = 0;
+  let codeBlockDowngraded = 0;
   for (const item of summary.rules_and_invariants || []) {
     if (typeof item.status !== "string") {
       item.status = "current";
       ruleStatusDefaulted += 1;
     }
   }
-  return { ruleStatusDefaulted };
+  for (const item of summary.summary_blocks || []) {
+    if (item?.format === "code_block") {
+      item.format = "paragraph";
+      if (typeof item.body !== "string" || item.body.trim().length === 0) {
+        item.body = "Verbatim source material is preserved in the cited source spans.";
+      }
+      delete item.language;
+      codeBlockDowngraded += 1;
+    }
+    if (item?.format !== "bullet" || typeof item.body !== "string") continue;
+    if (/^\s*[-*]\s+/.test(item.body) || item.body.includes("\n")) {
+      item.format = "paragraph";
+      bulletFormatRelaxed += 1;
+    }
+  }
+  if (!Array.isArray(summary.promises_made)) {
+    summary.promises_made = [];
+    promisesMadeDefaulted = 1;
+  }
+  return { ruleStatusDefaulted, promisesMadeDefaulted, bulletFormatRelaxed, codeBlockDowngraded };
 }
 
 function collectSourceLines(summary) {
@@ -1219,6 +1681,153 @@ function renderCollapsedUserMessage(message) {
   };
 }
 
+function handoffUserMessageIdentity(message) {
+  if (message.uuid) return "uuid:" + message.uuid;
+  if (message.originalUuid) return "uuid:" + message.originalUuid;
+  return [
+    "sha",
+    message.sha256 || "",
+    String(message.char_count || 0),
+    message.timestamp || "",
+  ].join(":");
+}
+
+function mergeHandoffUserMessages(carriedMessages, currentMessages) {
+  const byKey = new Map();
+  for (const message of carriedMessages) {
+    byKey.set(handoffUserMessageIdentity(message), message);
+  }
+  for (const message of currentMessages) {
+    const keys = [
+      message.uuid ? "uuid:" + message.uuid : null,
+      message.originalUuid ? "uuid:" + message.originalUuid : null,
+      handoffUserMessageIdentity(message),
+    ].filter(Boolean);
+    for (const key of keys) byKey.delete(key);
+    byKey.set(handoffUserMessageIdentity(message), message);
+  }
+  return [...byKey.values()];
+}
+
+function handoffUserMessageBody(message) {
+  if (typeof message.rendered_text === "string" && message.rendered_text.trim()) {
+    return message.rendered_text.trim();
+  }
+  const text = message.text || "";
+  if (text.length <= userMessageCollapseAt) return text.trim();
+  const head = text.slice(0, userMessageHeadChars).replace(/\n$/, "");
+  const tail = text
+    .slice(Math.max(text.length - userMessageTailChars, userMessageHeadChars))
+    .replace(/^\n/, "")
+    .replace(/\n$/, "");
+  const omitted = Math.max(text.length - head.length - tail.length, 0);
+  return [head, "", "[... omitted " + omitted + " chars ...]", "", tail].join("\n").trim();
+}
+
+function renderHandoffUserMessage(message) {
+  const attrs = {
+    source: message.source || "current",
+    line: message.line,
+    original_line: message.original_line || message.line,
+    chars: message.char_count || 0,
+    sha256: message.sha256 || "",
+    record_sha256: message.record_sha256 || "",
+    source_transcript_sha256: message.source_transcript_sha256 || "",
+    uuid: message.uuid || "",
+    original_uuid: message.originalUuid || "",
+    timestamp: message.timestamp || "",
+  };
+  const attrText = Object.entries(attrs)
+    .filter(([, value]) => value !== null && value !== undefined && String(value) !== "")
+    .map(([key, value]) => key + '="' + escapeXmlAttr(value) + '"')
+    .join(" ");
+  return "<user-message " + attrText + ">\n" + handoffUserMessageBody(message) + "\n</user-message>";
+}
+
+function selectHandoffUserMessages(messages) {
+  const selected = [];
+  let tokenEstimate = 0;
+  let lineCount = 0;
+  let omittedOlder = 0;
+  const maxMessages = handoffUserMessageLimit;
+  const maxTokens = handoffUserMessageTokenBudget;
+  const maxLines = handoffUserMessageLineLimit;
+
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    if (maxMessages === 0) {
+      omittedOlder = idx + 1;
+      break;
+    }
+    if (selected.length >= maxMessages) {
+      omittedOlder = idx + 1;
+      break;
+    }
+    const rendered = renderHandoffUserMessage(messages[idx]);
+    const renderedTokens = Math.ceil(rendered.length / 4);
+    const renderedLines = rendered.split(/\r?\n/).length;
+    const wouldExceedTokens = maxTokens > 0 && tokenEstimate + renderedTokens > maxTokens;
+    const wouldExceedLines = maxLines > 0 && lineCount + renderedLines > maxLines;
+    if (selected.length > 0 && (wouldExceedTokens || wouldExceedLines)) {
+      omittedOlder = idx + 1;
+      break;
+    }
+    selected.push({
+      ...messages[idx],
+      rendered,
+      rendered_tokens: renderedTokens,
+      rendered_lines: renderedLines,
+    });
+    tokenEstimate += renderedTokens;
+    lineCount += renderedLines;
+  }
+
+  selected.reverse();
+  return {
+    selected,
+    total: messages.length,
+    omitted_older: omittedOlder,
+    token_estimate: tokenEstimate,
+    line_count: lineCount,
+    limits: {
+      count: maxMessages,
+      token_budget: maxTokens,
+      line_limit: maxLines,
+    },
+  };
+}
+
+function renderHandoffUserMessagesSection(selection) {
+  if (!selection.selected.length) return "";
+  const lines = [
+    "## User Messages",
+    "",
+    "Harness-extracted user-authored messages. These are not model summaries. They are carried forward across compactions and bounded by count, token, and line limits.",
+    "",
+    '<user-message-ledger version="' +
+      HANDOFF_USER_MESSAGE_LEDGER_VERSION +
+      '" total="' +
+      selection.total +
+      '" selected="' +
+      selection.selected.length +
+      '" omitted_older="' +
+      selection.omitted_older +
+      '" token_estimate="' +
+      selection.token_estimate +
+      '" line_count="' +
+      selection.line_count +
+      '" count_limit="' +
+      selection.limits.count +
+      '" token_budget="' +
+      selection.limits.token_budget +
+      '" line_limit="' +
+      selection.limits.line_limit +
+      '">',
+  ];
+  for (const message of selection.selected) lines.push(message.rendered);
+  lines.push("</user-message-ledger>");
+  return lines.join("\n");
+}
+
 function anchorStart(item) {
   let min = Infinity;
   for (const span of item.source_spans || []) {
@@ -1227,15 +1836,11 @@ function anchorStart(item) {
   return Number.isFinite(min) ? min : 1000000000;
 }
 
-function renderTimelineModelItem(item, rehydratedSpansByBlock) {
+function renderTimelineModelItem(item) {
   if (item.kind === "rule") return "- [" + item.status + "] " + item.rule.trim();
   if (item.kind === "plan") return "- [" + item.status + "] " + item.item.trim();
+  if (item.kind === "promise") return "- [" + item.status + "] " + item.promise.trim();
   if (item.format === "bullet") return "- " + item.body.trim();
-  if (item.format === "code_block") {
-    const language = typeof item.language === "string" ? item.language.trim() : "";
-    const verbatim = (rehydratedSpansByBlock.get(item.summary_block_index) || []).join("\n\n").trim();
-    return ["```" + language, (verbatim || item.body).replace(/\n$/, ""), "```"].join("\n");
-  }
   return item.body.trim();
 }
 
@@ -1271,17 +1876,7 @@ function validateTimelineUnits(summary, userMessages) {
   return null;
 }
 
-function renderTimelineSummary(summary, userMessages, rehydratedSpans = []) {
-  const rehydratedSpansByBlock = new Map();
-  for (const span of rehydratedSpans) {
-    if (span.format !== "code_block") continue;
-    if (typeof span.block_index !== "number") continue;
-    const list = rehydratedSpansByBlock.get(span.block_index) || [];
-    if (typeof span.extracted_text === "string" && span.extracted_text.trim().length > 0) {
-      list.push(span.extracted_text.replace(/\n$/, ""));
-    }
-    rehydratedSpansByBlock.set(span.block_index, list);
-  }
+function renderTimelineSummary(summary, userMessages) {
   const units = buildTimelineUnits(summary, userMessages);
 
   const lines = ["# Compaction Timeline", ""];
@@ -1301,23 +1896,13 @@ function renderTimelineSummary(summary, userMessages, rehydratedSpans = []) {
         unit.item.section
     );
     lines.push("");
-    lines.push(renderTimelineModelItem(unit.item, rehydratedSpansByBlock));
+    lines.push(renderTimelineModelItem(unit.item));
     lines.push("");
   }
   return lines.join("\n").trim() + "\n";
 }
 
-function renderSummaryBlocks(summary, rehydratedSpans = []) {
-  const verbatimByBlock = new Map();
-  for (const span of rehydratedSpans) {
-    if (span.format !== "code_block") continue;
-    if (typeof span.block_index !== "number") continue;
-    const existing = verbatimByBlock.get(span.block_index) || [];
-    if (typeof span.extracted_text === "string" && span.extracted_text.trim().length > 0) {
-      existing.push(span.extracted_text.replace(/\n$/, ""));
-    }
-    verbatimByBlock.set(span.block_index, existing);
-  }
+function renderSummaryBlocks(summary) {
   const lines = [];
   const currentRules = (summary.rules_and_invariants || []).filter((item) => item.status === "current");
   if (currentRules.length > 0) {
@@ -1334,6 +1919,13 @@ function renderSummaryBlocks(summary, rehydratedSpans = []) {
     }
     lines.push("");
   }
+  if (Array.isArray(summary.promises_made) && summary.promises_made.length > 0) {
+    lines.push("## Promises Made");
+    for (const item of summary.promises_made) {
+      lines.push("- [" + item.status + "] " + item.promise.trim());
+    }
+    lines.push("");
+  }
   let currentSection = null;
   for (const [blockIndex, item] of summary.summary_blocks.entries()) {
     const section = item.section.trim();
@@ -1344,14 +1936,6 @@ function renderSummaryBlocks(summary, rehydratedSpans = []) {
     }
     if (item.format === "bullet") {
       lines.push("- " + item.body.trim());
-      continue;
-    }
-    if (item.format === "code_block") {
-      const language = typeof item.language === "string" ? item.language.trim() : "";
-      const verbatim = (verbatimByBlock.get(blockIndex) || []).join("\n\n").trim();
-      lines.push("```" + language);
-      lines.push((verbatim || item.body).replace(/\n$/, ""));
-      lines.push("```");
       continue;
     }
     lines.push(item.body.trim());
@@ -1386,6 +1970,13 @@ function allAnchoredItems(summary) {
       source_spans: item.source_spans,
     });
   }
+  for (const item of summary.promises_made || []) {
+    items.push({
+      section: "Promises Made",
+      format: "bullet",
+      source_spans: item.source_spans,
+    });
+  }
   for (const [idx, item] of (summary.summary_blocks || []).entries()) {
     items.push({ ...item, summary_block_index: idx });
   }
@@ -1410,6 +2001,16 @@ function timelineAnchoredItems(summary) {
       section: "Plans And Task State",
       format: "bullet",
       item: item.item,
+      status: item.status,
+      source_spans: item.source_spans,
+    });
+  }
+  for (const item of summary.promises_made || []) {
+    items.push({
+      kind: "promise",
+      section: "Promises Made",
+      format: "bullet",
+      promise: item.promise,
       status: item.status,
       source_spans: item.source_spans,
     });
@@ -1479,7 +2080,7 @@ function shouldPreserveTailRecord(record) {
   return record.type === "user" || record.type === "assistant" || record.type === "system" || record.type === "attachment";
 }
 
-function buildCompactedTranscript({ records, summary, stats, run, beforePath }) {
+function buildCompactedTranscript({ records, summary, stats, run, beforePath, handoffUserMessagesMarkdown, handoffUserMessageSelection }) {
   const baseMetadata = compactBaseMetadata(pickBaseMetadata(records));
   const boundaryUuid = safeUuid();
   const summaryUuid = safeUuid();
@@ -1510,12 +2111,26 @@ function buildCompactedTranscript({ records, summary, stats, run, beforePath }) 
       externalCompact: true,
       compactProfile: "warp-guided-span-rehydration",
       wasSummarized: true,
+      userMessages: handoffUserMessageSelection
+        ? {
+            selected: handoffUserMessageSelection.selected.length,
+            total: handoffUserMessageSelection.total,
+            omittedOlder: handoffUserMessageSelection.omitted_older,
+            tokenEstimate: handoffUserMessageSelection.token_estimate,
+            lineCount: handoffUserMessageSelection.line_count,
+            limits: handoffUserMessageSelection.limits,
+          }
+        : null,
       provider: PROVIDER,
       customSummaryInstructions: customSummaryInstructions.trim() || null,
       compactAndPrompt: compactAndPrompt.trim() || null,
       model: MODEL,
+      transcriptRenderer,
+      temperature: TEMPERATURE,
       serviceTier: PROVIDER === "codex" ? SERVICE_TIER : null,
       thinkingLevel: PROVIDER === "gemini" ? GEMINI_THINKING_LEVEL : null,
+      thinkingConfig:
+        PROVIDER === "gemini" ? geminiThinkingConfig(MODEL, GEMINI_THINKING_LEVEL) : null,
       sourceTranscriptSha256: stats.sha256,
     },
   };
@@ -1526,6 +2141,7 @@ function buildCompactedTranscript({ records, summary, stats, run, beforePath }) 
     "Summary:",
     summary.summary_markdown,
     "",
+    ...(handoffUserMessagesMarkdown ? [handoffUserMessagesMarkdown, ""] : []),
     "Full source transcript artifact:",
     beforePath,
     "",
@@ -1534,6 +2150,7 @@ function buildCompactedTranscript({ records, summary, stats, run, beforePath }) 
       : []),
     "Continue from the current work and optional next step captured in the summary. Treat the preserved tail records after this summary as extra local context only.",
   ].join("\n");
+  boundary.compactMetadata.postTokens = Math.ceil(summaryText.length / 4);
 
   const summaryRecord = {
     parentUuid: boundaryUuid,
@@ -1555,7 +2172,8 @@ function buildCompactedTranscript({ records, summary, stats, run, beforePath }) 
     timestamp: run.finishedAt,
   };
 
-  const tailSource = records.filter(shouldPreserveTailRecord).slice(-preserveTailCount);
+  const tailSource =
+    preserveTailCount === 0 ? [] : records.filter(shouldPreserveTailRecord).slice(-preserveTailCount);
   const tail = [];
   let parentUuid = summaryUuid;
   for (const source of tailSource) {
@@ -1593,11 +2211,13 @@ async function main() {
     records: records.length,
     approxTokens: Math.ceil(transcript.length / 4),
     userRecords: countUserMessages(records),
+    transcriptRenderer,
   };
   const promptText = buildFullTranscriptPrompt({
     wrappedTranscript: lineHashArtifacts.wrappedTranscript,
     stats,
   });
+  if (dumpPromptPath) await writeFile(resolve(dumpPromptPath), promptText);
   const request = buildRequestBody(promptText, stats);
   const bodyText = JSON.stringify(request.body);
   const endpoint = providerEndpoint();
@@ -1607,7 +2227,10 @@ async function main() {
     model: MODEL,
     service_tier: PROVIDER === "codex" ? SERVICE_TIER : null,
     reasoning_effort: PROVIDER === "codex" ? REASONING_EFFORT : null,
+    temperature: TEMPERATURE,
     thinking_level: PROVIDER === "gemini" ? GEMINI_THINKING_LEVEL : null,
+    thinking_config:
+      PROVIDER === "gemini" ? request.body.generationConfig?.thinkingConfig || null : null,
     max_output_tokens:
       PROVIDER === "gemini" && Number.isFinite(GEMINI_MAX_OUTPUT_TOKENS)
         ? GEMINI_MAX_OUTPUT_TOKENS
@@ -1617,6 +2240,7 @@ async function main() {
     transcript_sha256: sha256,
     transcript_bytes: stats.bytes,
     transcript_records: stats.records,
+    transcript_renderer: transcriptRenderer,
     estimated_char_div_4_tokens: stats.approxTokens,
     request_body_bytes: Buffer.byteLength(bodyText),
     live_output: liveOutput,
@@ -1627,6 +2251,9 @@ async function main() {
     user_message_collapse_at: userMessageCollapseAt,
     user_message_head_chars: userMessageHeadChars,
     user_message_tail_chars: userMessageTailChars,
+    handoff_user_message_limit: handoffUserMessageLimit,
+    handoff_user_message_token_budget: handoffUserMessageTokenBudget,
+    handoff_user_message_line_limit: handoffUserMessageLineLimit,
   };
 
   if (dryRun) {
@@ -1695,6 +2322,12 @@ async function main() {
     if (PROVIDER === "gemini" && !GEMINI_API_KEY) {
       throw new Error("Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini");
     }
+    if (PROVIDER === "xai" && !XAI_API_KEY) {
+      throw new Error("Missing XAI_API_KEY for --provider xai");
+    }
+    if (PROVIDER === "mantle" && !MANTLE_API_KEY) {
+      throw new Error("Missing MANTLE_API_KEY or BEDROCK_MANTLE_API_KEY for --provider mantle");
+    }
     process.stderr.write("sending full transcript request: " + JSON.stringify(requestMeta) + "\n");
 
     const response =
@@ -1708,6 +2341,16 @@ async function main() {
             },
             body: bodyText,
           })
+        : PROVIDER === "xai" || PROVIDER === "mantle"
+          ? await fetch(endpoint, {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer " + (PROVIDER === "xai" ? XAI_API_KEY : MANTLE_API_KEY),
+                Accept: "text/event-stream",
+                "Content-Type": "application/json",
+              },
+              body: bodyText,
+            })
         : await (async () => {
             const auth = await loadChatgptAuth();
             return fetch(endpoint, {
@@ -1715,12 +2358,15 @@ async function main() {
               headers: {
                 Authorization: "Bearer " + auth.accessToken,
                 "ChatGPT-Account-Id": auth.accountId,
+                originator: CODEX_ORIGINATOR,
+                "User-Agent": CODEX_USER_AGENT,
                 Accept: "text/event-stream",
                 "Content-Type": "application/json",
                 "session-id": request.ids.sessionId,
                 "thread-id": request.ids.threadId,
                 "x-client-request-id": request.ids.threadId,
                 "x-codex-installation-id": request.ids.installationId,
+                "x-codex-window-id": request.ids.windowId,
               },
               body: bodyText,
             });
@@ -1817,7 +2463,7 @@ async function main() {
   delete summary.all_user_messages;
   const legacySummaryNormalization = loadedFromOutput
     ? normalizeLegacySummary(summary)
-    : { ruleStatusDefaulted: 0 };
+    : { ruleStatusDefaulted: 0, promisesMadeDefaulted: 0, bulletFormatRelaxed: 0, codeBlockDowngraded: 0 };
 
   // Canonicalize derived citation fields before validation so minor model
   // omissions do not fail an otherwise grounded summary.
@@ -1848,6 +2494,10 @@ async function main() {
 
   const rehydratedSpans = deriveRehydrationSpans(summary, records, lineHashArtifacts);
   const userMessages = extractUserMessages(records, lineHashArtifacts);
+  const carriedUserMessages = extractCarriedHandoffUserMessages(records);
+  const handoffUserMessages = mergeHandoffUserMessages(carriedUserMessages, userMessages);
+  const handoffUserMessageSelection = selectHandoffUserMessages(handoffUserMessages);
+  const handoffUserMessagesMarkdown = renderHandoffUserMessagesSection(handoffUserMessageSelection);
   const userMessageValidationError = validateUserMessageArtifacts(userMessages);
   if (userMessageValidationError) {
     const failure = {
@@ -1912,8 +2562,8 @@ async function main() {
     process.exit(1);
   }
   summary.source_hashes_used = collectSourceHashes(summary, lineHashArtifacts);
-  summary.summary_markdown = renderSummaryBlocks(summary, rehydratedSpans);
-  const timelineMarkdown = renderTimelineSummary(summary, userMessages, rehydratedSpans);
+  summary.summary_markdown = renderSummaryBlocks(summary);
+  const timelineMarkdown = renderTimelineSummary(summary, userMessages);
   await writeFile(summaryJsonPath, JSON.stringify(summary, null, 2) + "\n");
   await writeFile(summaryMdPath, summary.summary_markdown.trim() + "\n");
   await writeFile(timelineMdPath, timelineMarkdown);
@@ -1925,12 +2575,20 @@ async function main() {
           source_transcript: inputPath,
           transcript_sha256: sha256,
           transcript_records: records.length,
-          message_count: userMessages.length,
+          current_message_count: userMessages.length,
+          carried_message_count: carriedUserMessages.length,
+          selected_message_count: handoffUserMessageSelection.selected.length,
+          omitted_older_count: handoffUserMessageSelection.omitted_older,
+          handoff_token_estimate: handoffUserMessageSelection.token_estimate,
+          handoff_line_count: handoffUserMessageSelection.line_count,
+          handoff_limits: handoffUserMessageSelection.limits,
           collapse_at: userMessageCollapseAt,
           head_chars: userMessageHeadChars,
           tail_chars: userMessageTailChars,
         },
-        messages: userMessages,
+        messages: handoffUserMessageSelection.selected,
+        current_messages: userMessages,
+        carried_messages: carriedUserMessages,
       },
       null,
       2
@@ -1940,7 +2598,18 @@ async function main() {
   await writeFile(rehydratedSummaryPath, renderRehydratedSummary(summary, rehydratedSpans));
   await writeFile(
     snapshotPath,
-    JSON.stringify({ status: "validated", summary, userMessages, rehydratedSpans }, null, 2) + "\n"
+    JSON.stringify(
+      {
+        status: "validated",
+        summary,
+        userMessages,
+        carriedUserMessages,
+        handoffUserMessages: handoffUserMessageSelection,
+        rehydratedSpans,
+      },
+      null,
+      2
+    ) + "\n"
   );
   await writeFile(livePath, renderRehydratedSummary(summary, rehydratedSpans));
 
@@ -1956,6 +2625,8 @@ async function main() {
     stats,
     run,
     beforePath,
+    handoffUserMessagesMarkdown,
+    handoffUserMessageSelection,
   });
   await writeFile(afterPath, afterTranscript);
 
@@ -1968,7 +2639,10 @@ async function main() {
     model: MODEL,
     service_tier: PROVIDER === "codex" ? SERVICE_TIER : null,
     reasoning: PROVIDER === "codex" ? request.body.reasoning : null,
+    temperature: TEMPERATURE,
     thinking_level: PROVIDER === "gemini" ? GEMINI_THINKING_LEVEL : null,
+    thinking_config:
+      PROVIDER === "gemini" ? request.body.generationConfig?.thinkingConfig || null : null,
     request: requestMeta,
     response_id: adapter.responseId(events),
     usage: adapter.usage(events),
@@ -1977,6 +2651,9 @@ async function main() {
     output_sha256: createHash("sha256").update(outputText).digest("hex"),
     legacy_model_user_messages_discarded: legacyModelUserMessagesDiscarded,
     legacy_rule_status_defaulted: legacySummaryNormalization.ruleStatusDefaulted,
+    legacy_promises_made_defaulted: legacySummaryNormalization.promisesMadeDefaulted,
+    legacy_bullet_format_relaxed: legacySummaryNormalization.bulletFormatRelaxed,
+    legacy_code_block_downgraded: legacySummaryNormalization.codeBlockDowngraded,
     summary_chars: summary.summary_markdown.length,
     summary_estimated_tokens: Math.ceil(summary.summary_markdown.length / 4),
     summary_block_count: summary.summary_blocks.length,
@@ -1985,6 +2662,7 @@ async function main() {
       (item) => item.status === "current"
     ).length,
     plans_and_task_state_count: summary.plans_and_task_state.length,
+    promises_made_count: summary.promises_made.length,
     user_message_count: userMessages.length,
     user_message_total_chars: userMessages.reduce((total, message) => total + message.char_count, 0),
     user_message_collapsed_count: userMessages.filter(
@@ -1994,6 +2672,13 @@ async function main() {
       (max, message) => Math.max(max, message.char_count),
       0
     ),
+    carried_user_message_count: carriedUserMessages.length,
+    handoff_user_message_total_count: handoffUserMessages.length,
+    handoff_user_message_selected_count: handoffUserMessageSelection.selected.length,
+    handoff_user_message_omitted_older_count: handoffUserMessageSelection.omitted_older,
+    handoff_user_message_token_estimate: handoffUserMessageSelection.token_estimate,
+    handoff_user_message_line_count: handoffUserMessageSelection.line_count,
+    handoff_user_message_limits: handoffUserMessageSelection.limits,
     rehydrated_span_count: rehydratedSpans.length,
     source_line_count: summary.source_lines_used.length,
     before_estimated_tokens: stats.approxTokens,
@@ -2009,6 +2694,7 @@ async function main() {
     was_summarized: true,
     custom_summary_instructions: customSummaryInstructions.trim() || null,
     compact_and_prompt: compactAndPrompt.trim() || null,
+    transcript_renderer: transcriptRenderer,
     integrity_echo_matches:
       summary.source_integrity.transcript_sha256 === sha256 &&
       summary.source_integrity.transcript_lines_seen === records.length,

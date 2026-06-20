@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { arch, homedir, platform, release } from "node:os";
+import { dirname, join } from "node:path";
 
 const CODEX_RESPONSES_URL =
   process.env.CODEX_RESPONSES_URL || "https://chatgpt.com/backend-api/codex/responses";
 const AUTH_PATH = process.env.CODEX_AUTH_JSON || join(homedir(), ".codex", "auth.json");
+const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
+const CODEX_INSTALLATION_ID_PATH =
+  process.env.CODEX_INSTALLATION_ID_PATH || join(CODEX_HOME, "installation_id");
+const CODEX_ORIGINATOR = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || "codex_cli_rs";
+const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || resolveCodexClientVersion();
+const CODEX_USER_AGENT = process.env.CODEX_USER_AGENT || buildCodexUserAgent();
 
 function argValue(name, fallback = undefined) {
   const idx = process.argv.indexOf(name);
@@ -34,10 +42,88 @@ async function loadChatgptAuth() {
   return { accessToken, accountId };
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function resolveCodexInstallationId() {
+  try {
+    const existing = readFileSync(CODEX_INSTALLATION_ID_PATH, "utf8").trim();
+    if (isUuid(existing)) return existing.toLowerCase();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const installationId = randomUUID();
+  mkdirSync(dirname(CODEX_INSTALLATION_ID_PATH), { recursive: true });
+  writeFileSync(CODEX_INSTALLATION_ID_PATH, installationId, { mode: 0o644 });
+  return installationId;
+}
+
+function commandOutput(command, args) {
+  try {
+    return execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function parseVersion(value) {
+  return String(value || "").match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] || "";
+}
+
+function resolveCodexClientVersion() {
+  const cliVersion = parseVersion(commandOutput("codex", ["--version"]));
+  if (cliVersion) return cliVersion;
+  try {
+    const cached = JSON.parse(readFileSync(join(CODEX_HOME, "version.json"), "utf8"));
+    const cachedVersion = parseVersion(cached.latest_version);
+    if (cachedVersion) return cachedVersion;
+  } catch {
+    // Fall through to a syntactically valid development version.
+  }
+  return "0.0.0";
+}
+
+function codexArchitecture() {
+  const value = arch();
+  if (value === "x64") return "x86_64";
+  return value || "unknown";
+}
+
+function codexOsDescription() {
+  if (platform() === "darwin") {
+    const macVersion = commandOutput("sw_vers", ["-productVersion"]);
+    return "Mac OS " + (macVersion || release());
+  }
+  return platform() + " " + release();
+}
+
+function buildCodexUserAgent() {
+  const reqwestVersion = process.env.CODEX_REQWEST_VERSION || "0.12.28";
+  return (
+    CODEX_ORIGINATOR +
+    "/" +
+    CODEX_CLIENT_VERSION +
+    " (" +
+    codexOsDescription() +
+    "; " +
+    codexArchitecture() +
+    ") reqwest/" +
+    reqwestVersion
+  );
+}
+
 function buildRequestBody(promptText) {
   const sessionId = randomUUID();
   const threadId = randomUUID();
-  const installationId = randomUUID();
+  const windowId = `${threadId}:0`;
+  const installationId = resolveCodexInstallationId();
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -49,7 +135,7 @@ function buildRequestBody(promptText) {
     },
   };
   return {
-    ids: { sessionId, threadId, installationId },
+    ids: { sessionId, threadId, windowId, installationId },
     body: {
       model: "gpt-5.4",
       instructions: "You are a strict JSON smoke-test responder. Output only data matching the schema.",
@@ -63,7 +149,7 @@ function buildRequestBody(promptText) {
       tools: [],
       tool_choice: "auto",
       parallel_tool_calls: false,
-      reasoning: { effort: "low", summary: "auto" },
+      reasoning: { effort: "low" },
       store: false,
       stream: true,
       include: ["reasoning.encrypted_content"],
@@ -78,6 +164,10 @@ function buildRequestBody(promptText) {
         },
       },
       client_metadata: {
+        "x-codex-installation-id": installationId,
+        "x-codex-window-id": windowId,
+        session_id: sessionId,
+        thread_id: threadId,
         codex_harness: "claudecompact-patcher",
         request_kind: "smoke",
       },
@@ -92,8 +182,15 @@ function redactRequestForLog(request) {
     headers: {
       Authorization: "Bearer <redacted>",
       "ChatGPT-Account-Id": "<redacted>",
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": CODEX_USER_AGENT,
       Accept: "text/event-stream",
       "Content-Type": "application/json",
+      "session-id": request.ids.sessionId,
+      "thread-id": request.ids.threadId,
+      "x-client-request-id": request.ids.threadId,
+      "x-codex-installation-id": request.ids.installationId,
+      "x-codex-window-id": request.ids.windowId,
     },
     body: request.body,
   };
@@ -158,12 +255,15 @@ async function main() {
     headers: {
       Authorization: `Bearer ${auth.accessToken}`,
       "ChatGPT-Account-Id": auth.accountId,
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": CODEX_USER_AGENT,
       Accept: "text/event-stream",
       "Content-Type": "application/json",
       "session-id": request.ids.sessionId,
       "thread-id": request.ids.threadId,
       "x-client-request-id": request.ids.threadId,
       "x-codex-installation-id": request.ids.installationId,
+      "x-codex-window-id": request.ids.windowId,
     },
     body: JSON.stringify(request.body),
   });

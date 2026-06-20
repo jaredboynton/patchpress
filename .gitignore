@@ -26,6 +26,10 @@ tmp/
 temp/
 *.log
 
+# Local agent orchestration state
+.fablize/
+.unifable/
+
 # Full input transcripts are large local fixtures. Keep manifests/docs tracked.
 transcripts/*.jsonl
 !transcripts/manifest.tsv

@@ -1,9 +1,14 @@
-# Shared Compaction Prompt
+# Our Shared Compaction Prompt
 
-This file is generated from `buildFullTranscriptPrompt()` in `scripts/compact-full-transcript.mjs`.
-Run `node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown` to regenerate it.
+Source: `docs/shared-compaction-prompt.md`
 
-Placeholders represent per-run transcript metadata or the wrapped JSONL transcript payload.
+Generated from: `buildFullTranscriptPrompt()` in `scripts/compact-full-transcript.mjs`
+
+Regenerate with:
+
+```sh
+node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown
+```
 
 ```text
 You are a compaction model for Claude Code session transcripts.
@@ -20,7 +25,7 @@ Critical shape requirement:
 Return strict JSON only. The JSON must match the provided schema.
 
 Evidence span format:
-- The transcript is wrapped as <record line="000001">...</record>.
+- The transcript is wrapped as <record line="000001">JSONL</record>.
 - Use one-based logical JSONL record numbers from those wrappers for every source span.
 - summary_blocks is the primary structured output. It must be ordered exactly as the continuation summary should read.
 - Every summary_blocks item must include one or more source_spans pointing to the exact supporting record ranges.
@@ -60,12 +65,10 @@ Transcript metadata:
 - sha256: {{TRANSCRIPT_SHA256}}
 - bytes: {{TRANSCRIPT_BYTES}}
 - logical JSONL records: {{TRANSCRIPT_RECORDS}}
-- prompt transcript renderer: {{TRANSCRIPT_RENDERER}}
 - approximate char_div_4 tokens: {{APPROX_CHAR_DIV_4_TOKENS}}
 - observed user record count estimate: {{USER_RECORD_COUNT}}
 
-<transcript>
+<transcript_jsonl>
 {{WRAPPED_TRANSCRIPT_JSONL}}
-</transcript>
+</transcript_jsonl>
 ```
-

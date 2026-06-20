@@ -28,6 +28,11 @@ node scripts/compact-full-transcript.mjs
 By default it reads
 `transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl`.
 
+By default, the model sees a stripped, line-addressed text rendering of the
+transcript rather than raw JSONL. The original JSONL is still copied into the
+run directory and used for source-span rehydration. Use
+`--transcript-renderer jsonl` only for diagnostics.
+
 The request is streamed. While it runs, the script appends live deltas to
 `runs/.../model-output.json`, writes the raw SSE stream to `runs/.../response.sse`,
 and mirrors the deltas to stderr.
@@ -39,6 +44,26 @@ with `buildFullTranscriptPrompt()`:
 ```sh
 node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown > docs/shared-compaction-prompt.md
 ```
+
+### Handoff user messages
+
+`after-compact.jsonl` now includes a deterministic `## User Messages` section in
+the compact summary record. The model does not write this section. The harness
+extracts real user-authored messages, collapses long messages with head/tail
+preservation, and carries the selected ledger forward across later compactions.
+
+Bounds:
+
+- `--handoff-user-message-limit` default `64`
+- `--handoff-user-message-token-budget` default `8000` using char/4 estimate
+- `--handoff-user-message-line-limit` default `300`
+- `--user-message-collapse-at` default `2400`
+- `--user-message-head-chars` default `900`
+- `--user-message-tail-chars` default `900`
+
+Newest messages win when limits are hit; selected messages are rendered back in
+chronological order. The sidecar `user-messages.json` records current, carried,
+and selected messages plus the applied limits.
 
 ## Benchmark Results
 
@@ -65,6 +90,13 @@ Saved reports:
 
 - `runs/compact-user-messages-live-2026-06-20/benchmark-results.md`
 - `runs/compact-gemini-35-flash-live-2026-06-20/benchmark-results.md`
+- `docs/phase-2-benchmark-results.md`
+- `docs/model-mix-recommendation.md`
+
+The current cross-provider comparison is in
+`docs/phase-2-benchmark-results.md`. The stripped GPT-5.4 Codex run is the
+quality leader, but the routing recommendation keeps it as a premium recovery
+lane because it is much slower than the Gemini default and fast lanes.
 
 ### Gemini provider
 
@@ -84,14 +116,39 @@ so Gemini can enforce the harness JSON contract while streaming text chunks.
 Defaults:
 
 - model: `gemini-3.5-flash`
-- thinking level: `low`
+- thinking level: `none`
 - max output tokens: `65536`
+
+`none` is translated per Gemini model family: Gemini 3.x Flash/Flash-Lite use
+`thinkingLevel: "minimal"` because those models do not expose full
+thinking-off; older non-thinking Flash lines omit `thinkingConfig`.
 
 Overrides:
 
 ```sh
 GEMINI_COMPACT_MODEL=gemini-3.5-flash \
-GEMINI_COMPACT_THINKING_LEVEL=low \
+GEMINI_COMPACT_THINKING_LEVEL=none \
 GEMINI_COMPACT_MAX_OUTPUT_TOKENS=65536 \
 node scripts/compact-full-transcript.mjs --provider gemini
 ```
+
+### OpenAI-compatible providers
+
+The harness also supports xAI direct and Bedrock Mantle chat-completions
+surfaces with the same strict JSON-schema contract:
+
+```sh
+XAI_API_KEY=... \
+node scripts/compact-full-transcript.mjs --provider xai --model grok-4.20-0309-non-reasoning
+
+MANTLE_API_KEY=... \
+node scripts/compact-full-transcript.mjs --provider mantle --model xai.grok-4.3
+```
+
+Provider defaults:
+
+- xAI direct: `grok-4.20-0309-non-reasoning` at `https://api.x.ai/v1/chat/completions`
+- Bedrock Mantle: `xai.grok-4.3` at `https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions`
+
+For Gemini phase-2 runs, use `gemini-3.5-flash` with minimal thinking and
+`gemini-3.1-flash-lite` with medium thinking.
