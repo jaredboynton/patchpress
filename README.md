@@ -95,14 +95,17 @@ EXP-04 + EXP-05 + EXP-06 + EXP-07 stack:
 EXP-08/09 are implemented as gated tracks:
 
 - `--transcript-renderer sentinel` is an opt-in A/B renderer with delimiter
-  escaping and selective old tool-output compression. Current dry-run evidence
+  escaping, selective old tool-output compression, model-ordered handoff
+  sections, and no duplicate current-work wrapper. Current dry-run evidence
   reduced request body size from `601,526` to `468,748` bytes, omitted
-  `137,749` model-visible chars (~`34,437` char/4 tokens), and passed the
-  no-API scorecard. The prior live stripped Codex run used `168,325` input
-  tokens; applying that observed byte/token ratio projects Sentinel at about
-  `131,087` input tokens, saving about `37,238`. That projection is not a live
-  Sentinel token measurement, so `stripped` remains default until live provider
-  retention and token usage are confirmed.
+  `137,749` model-visible chars (~`34,437` char/4 tokens), produced a `5,353`
+  token no-tail handoff, passed the `100/100` no-API scorecard, and passed the
+  live `gpt-5.5` medium-reasoning semantic judge. The prior live stripped Codex
+  run used `168,325` input tokens; applying that observed byte/token ratio
+  projects Sentinel at about `131,087` input tokens, saving about `37,238`.
+  That projection is not a live Sentinel compaction token measurement, so
+  `stripped` remains default until live provider retention and token usage are
+  confirmed.
 - Provider-native compaction endpoints are not used for the Claude handoff
   use case. Their opaque blobs are bound to the provider/model that produced
   them, so they cannot let a different provider/model compact a Claude session

@@ -123,8 +123,13 @@ provider-native compaction decision.
 - Sentinel no-API replay score: `100/100`, with `50` evidence capsules, `8`
   user intent events, `0` bad manifest hashes, and no missing required
   literals.
-- Sentinel no-API replay footprint: `5,427` estimated after tokens and
-  `22,242` after bytes with `--preserve-tail 0`.
+- Sentinel ordered+dedup no-API replay footprint: `5,353` estimated after
+  tokens and `21,945` after bytes with `--preserve-tail 0`. The handoff now
+  leads with model-ordered current state and omits the duplicate renderer-level
+  current-work/next-step wrapper.
+- Sentinel ordered+dedup live semantic judge: `overall_pass=true`,
+  `validation_error=null`, `20,101` input tokens, `803` output tokens, and `156`
+  reasoning tokens with `gpt-5.5` medium reasoning.
 - Artifact policy: all `13` manifest artifacts include retention, exposure,
   and redaction fields; manifest policy schema is
   `artifact-retention-policy.v1`.

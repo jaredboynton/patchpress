@@ -133,6 +133,7 @@ try {
     "1000",
   ]);
   const manifest = await readJson(join(outDir, "handoff-manifest.json"));
+  const handoff = await readFile(join(outDir, "handoff.md"), "utf8");
   assert(manifest.artifact_policy?.schema === "artifact-retention-policy.v1", "manifest policy missing");
   assert(
     manifest.artifacts.every((artifact) => artifact.retention && artifact.exposure && artifact.redaction),
@@ -142,6 +143,8 @@ try {
     manifest.provider?.renderer_policy?.transcript_renderer === "sentinel",
     "renderer policy missing from manifest"
   );
+  assert(!handoff.includes("## Current Work"), "handoff has redundant current-work wrapper");
+  assert(handoff.indexOf("## Current State") < handoff.indexOf("## User Messages"), "handoff summary is not first");
 
   const judgeOut = join(tmp, "judge");
   const judgeStdout = runNode([
