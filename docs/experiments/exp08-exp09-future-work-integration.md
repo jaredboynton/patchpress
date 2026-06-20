@@ -71,7 +71,11 @@ policy, and semantic judging.
 - [x] Benchmark sentinel/body compression against the current stripped baseline.
   Current dry-run evidence: `stripped` request body `601,526` bytes versus
   `sentinel` request body `468,748` bytes, with `11` old tool-output records
-  compressed and `137,749` chars omitted from the model-visible prompt.
+  compressed and `137,749` chars omitted from the model-visible prompt. That is
+  about `34,437` char/4 tokens. Against the prior live Codex stripped run
+  (`601,907` request bytes, `168,325` provider-reported input tokens), the same
+  byte/token ratio projects Sentinel at about `131,087` input tokens, saving
+  about `37,238`; this is projected, not observed live Sentinel usage.
 - [x] Run native provider probe dry-runs for the three documented native paths:
   OpenAI `/responses/compact`, xAI `/v1/responses/compact`, and Anthropic
   `compact_20260112`. Live native calls remain explicit `--live` probes because
@@ -107,6 +111,12 @@ policy, and semantic judging.
 
 - Sentinel dry-run request-body bytes: `468,748`.
 - Stripped dry-run request-body bytes: `601,526`.
+- Omitted model-visible tool-output chars: `137,749`, about `34,437` char/4
+  tokens.
+- Prior live stripped Codex request: `601,907` request bytes and `168,325`
+  provider-reported input tokens. Sentinel's `468,748` request bytes project to
+  about `131,087` input tokens, or about `37,238` fewer input tokens, if the
+  same byte/token ratio holds.
 - Sentinel no-API replay score: `100/100`, with `50` evidence capsules, `8`
   user intent events, `0` bad manifest hashes, and no missing required
   literals.

@@ -37,6 +37,19 @@ Sentinel compression metrics:
 | original compressed body chars | 153,149 |
 | rendered compressed body chars | 43,111 |
 | omitted tool-output chars | 137,749 |
+| omitted char/4 token estimate | 34,437 |
+
+Input-token implication:
+
+- Observed live Codex/GPT-5.4 stripped rebenchmark:
+  `601,907` request bytes and `168,325` provider-reported input tokens.
+- Sentinel no-API request body: `468,748` request bytes.
+- If the observed stripped byte/token ratio holds, Sentinel would project to
+  about `131,087` input tokens, saving about `37,238` input tokens
+  (`22.1%`) on the compaction-model request.
+- This is a projection, not an observed live Sentinel token count. The observed
+  Sentinel data is request bytes plus char/4 estimates; live provider input
+  tokens still need a live Sentinel run.
 
 ## No-API Replay
 

@@ -96,9 +96,13 @@ EXP-08/09 are implemented as gated tracks:
 
 - `--transcript-renderer sentinel` is an opt-in A/B renderer with delimiter
   escaping and selective old tool-output compression. Current dry-run evidence
-  reduced request body size from `601,526` to `468,748` bytes and passed the
-  no-API scorecard, but `stripped` remains default until live provider retention
-  is confirmed.
+  reduced request body size from `601,526` to `468,748` bytes, omitted
+  `137,749` model-visible chars (~`34,437` char/4 tokens), and passed the
+  no-API scorecard. The prior live stripped Codex run used `168,325` input
+  tokens; applying that observed byte/token ratio projects Sentinel at about
+  `131,087` input tokens, saving about `37,238`. That projection is not a live
+  Sentinel token measurement, so `stripped` remains default until live provider
+  retention and token usage are confirmed.
 - `scripts/probe-native-compaction.mjs` generates redacted dry-run, or explicit
   `--live`, native compaction probes for OpenAI `/responses/compact`, xAI
   `/v1/responses/compact`, and Anthropic `compact_20260112`. Native output is
