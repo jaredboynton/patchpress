@@ -151,6 +151,16 @@ const preserveTailCount = intArg("--preserve-tail", 16);
 const dryRun = process.argv.includes("--dry-run");
 const liveOutput = !process.argv.includes("--no-live-output");
 const dumpPromptPath = argValue("--dump-prompt", "");
+const rendererStatsReportPath = argValue("--renderer-stats-report", "");
+const rendererStatsRenderers = argValue("--renderer-stats-renderers", "stripped,sentinel,jsonl")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+for (const renderer of rendererStatsRenderers) {
+  if (renderer !== "stripped" && renderer !== "sentinel" && renderer !== "jsonl") {
+    throw new Error("Expected --renderer-stats-renderers entries to be stripped, sentinel, or jsonl");
+  }
+}
 const temperatureRaw = argValue("--temperature", process.env.COMPACT_TEMPERATURE || "");
 const TEMPERATURE = temperatureRaw === "" ? null : Number.parseFloat(temperatureRaw);
 if (temperatureRaw !== "" && !Number.isFinite(TEMPERATURE)) {
@@ -466,6 +476,463 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
       .join("\n") +
     "\n";
   return { entries, wrappedTranscript, tsv, renderStats };
+}
+
+function byteLength(text) {
+  return Buffer.byteLength(String(text || ""));
+}
+
+function tableEscape(value) {
+  return String(value ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ")
+    .trim();
+}
+
+function addAggregate(map, key, values) {
+  const existing =
+    map.get(key) || {
+      key,
+      records: 0,
+      blocks: 0,
+      rawBytes: 0,
+      rawChars: 0,
+      promptChars: 0,
+      renderedChars: 0,
+      renderedBytes: 0,
+      maxRenderedChars: 0,
+      maxLine: null,
+    };
+  existing.records += values.records || 0;
+  existing.blocks += values.blocks || 0;
+  existing.rawBytes += values.rawBytes || 0;
+  existing.rawChars += values.rawChars || 0;
+  existing.promptChars += values.promptChars || 0;
+  existing.renderedChars += values.renderedChars || 0;
+  existing.renderedBytes += values.renderedBytes || 0;
+  if ((values.renderedChars || 0) > existing.maxRenderedChars) {
+    existing.maxRenderedChars = values.renderedChars || 0;
+    existing.maxLine = values.line || null;
+  }
+  map.set(key, existing);
+}
+
+function sortedAggregates(map, limit = Infinity) {
+  return [...map.values()]
+    .sort((a, b) => b.renderedBytes - a.renderedBytes || b.promptChars - a.promptChars || b.records - a.records)
+    .slice(0, limit);
+}
+
+function markdownTable(headers, rows) {
+  const lines = [];
+  lines.push("| " + headers.join(" | ") + " |");
+  lines.push("|" + headers.map(() => "---").join("|") + "|");
+  for (const row of rows) {
+    lines.push("| " + row.map(tableEscape).join(" | ") + " |");
+  }
+  return lines.join("\n");
+}
+
+function recordBlockParts(record) {
+  const content = record?.message?.content ?? record?.content;
+  if (typeof content === "string") {
+    return [{ type: "string_content", raw: content, prompt: content }];
+  }
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === "string") return { type: "string_part", raw: part, prompt: part };
+      if (!part || typeof part !== "object") return { type: "empty_part", raw: "", prompt: "" };
+      return {
+        type: part.type || (part.tool_use_id ? "tool_result" : "object_part"),
+        raw: JSON.stringify(part),
+        prompt: renderPartForPrompt(part),
+      };
+    });
+  }
+  if (record?.attachment && typeof record.attachment === "object") {
+    return [
+      {
+        type: "attachment:" + String(record.attachment.type || "unknown"),
+        raw: JSON.stringify(record.attachment),
+        prompt: "",
+      },
+    ];
+  }
+  if (typeof record?.content === "string") {
+    return [{ type: "top_level_content", raw: record.content, prompt: record.content }];
+  }
+  return [];
+}
+
+function recordKind(record) {
+  if (!record || typeof record !== "object") return "unparsed";
+  if (record.isCompactSummary) return "compact_summary";
+  if (record.type === "attachment") return "attachment";
+  if (record.type === "file-history-snapshot") return "file_history_snapshot";
+  if (record.toolUseResult || record.sourceToolAssistantUUID || isToolOutputRecord(record)) return "tool_output";
+  const content = record.message?.content;
+  if (Array.isArray(content) && content.some((part) => part?.type === "tool_use")) return "tool_use";
+  if (record.message?.role === "user") return "user_message";
+  if (record.message?.role === "assistant") return "assistant_message";
+  if (record.type === "system") return "system";
+  if (["last-prompt", "mode", "permission-mode", "ai-title", "queue-operation"].includes(record.type)) {
+    return "metadata";
+  }
+  return record.type || "unknown";
+}
+
+function renderEntryForStats(entry, renderer, context) {
+  const line = String(entry.lineNumber).padStart(6, "0");
+  if (renderer === "stripped") return renderStrippedRecord(entry);
+  if (renderer === "sentinel") return renderSentinelRecord(entry, context);
+  return '<record line="' + line + '">' + entry.raw + "</record>";
+}
+
+function rendererStatsForTranscript(transcript, renderer) {
+  const artifacts = buildRecordArtifacts(transcript, renderer);
+  const byRecordType = new Map();
+  const byRole = new Map();
+  const byKind = new Map();
+  const byBlockType = new Map();
+  const byRecordBlock = new Map();
+  const topRendered = [];
+  const topRaw = [];
+  const topOmitted = [];
+  const lines = logicalJsonlLines(transcript);
+  const entries = artifacts.entries;
+  const renderStats = {
+    compressedToolOutputRecords: 0,
+    originalToolOutputChars: 0,
+    renderedToolOutputChars: 0,
+    omittedToolOutputChars: 0,
+  };
+  for (const entry of entries) {
+    let record = null;
+    let parsed = true;
+    try {
+      record = JSON.parse(entry.raw);
+    } catch {
+      parsed = false;
+    }
+    const context = { recordCount: entries.length, stats: renderStats };
+    const rendered = renderEntryForStats(entry, renderer, context);
+    const parts = parsed ? recordBlockParts(record) : [];
+    const promptChars = parsed ? recordTextForPrompt(record).length : 0;
+    const type = parsed ? record.type || "unknown" : "unparsed";
+    const role = parsed ? record.message?.role || "(none)" : "(unparsed)";
+    const kind = parsed ? recordKind(record) : "unparsed";
+    const values = {
+      records: 1,
+      rawBytes: byteLength(entry.raw),
+      rawChars: entry.raw.length,
+      promptChars,
+      renderedChars: rendered.length,
+      renderedBytes: byteLength(rendered),
+      line: entry.lineNumber,
+    };
+    addAggregate(byRecordType, type, values);
+    addAggregate(byRole, role, values);
+    addAggregate(byKind, kind, values);
+    if (parts.length === 0) {
+      addAggregate(byBlockType, "(no content block)", {
+        records: 1,
+        blocks: 1,
+        rawChars: 0,
+        promptChars: 0,
+        renderedChars: 0,
+        line: entry.lineNumber,
+      });
+      addAggregate(byRecordBlock, type + " / (no content block)", {
+        records: 1,
+        blocks: 1,
+        rawChars: 0,
+        promptChars: 0,
+        renderedChars: 0,
+        line: entry.lineNumber,
+      });
+    } else {
+      const seenBlockTypes = new Set();
+      for (const part of parts) {
+        const blockValues = {
+          blocks: 1,
+          rawChars: String(part.raw || "").length,
+          promptChars: String(part.prompt || "").length,
+          renderedChars: String(part.prompt || "").length,
+          line: entry.lineNumber,
+        };
+        addAggregate(byBlockType, part.type, blockValues);
+        addAggregate(byRecordBlock, type + " / " + part.type, blockValues);
+        seenBlockTypes.add(part.type);
+      }
+      for (const blockType of seenBlockTypes) {
+        const aggregate = byBlockType.get(blockType);
+        aggregate.records += 1;
+      }
+    }
+    topRendered.push({
+      line: entry.lineNumber,
+      type,
+      role,
+      kind,
+      renderedBytes: byteLength(rendered),
+      rawBytes: byteLength(entry.raw),
+      hash: entry.hash.slice(0, 12),
+      preview: entry.preview,
+    });
+    topRaw.push({
+      line: entry.lineNumber,
+      type,
+      role,
+      kind,
+      renderedBytes: byteLength(rendered),
+      rawBytes: byteLength(entry.raw),
+      hash: entry.hash.slice(0, 12),
+      preview: entry.preview,
+    });
+    if (renderer === "sentinel" && parsed && isToolOutputRecord(record)) {
+      const body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+      const oldToolOutput =
+        toolOutputCompressAfter > 0 && entry.lineNumber <= entries.length - toolOutputCompressAfter;
+      const compacted = oldToolOutput ? compactOldToolOutputBody(body, entry) : { compressed: false };
+      if (compacted.compressed) {
+        topOmitted.push({
+          line: entry.lineNumber,
+          type,
+          role,
+          kind,
+          omittedChars: compacted.omittedChars,
+          originalChars: compacted.originalChars,
+          hash: entry.hash.slice(0, 12),
+          preview: entry.preview,
+        });
+      }
+    }
+  }
+  return {
+    renderer,
+    recordCount: lines.length,
+    rawTranscriptBytes: byteLength(transcript),
+    rawTranscriptChars: transcript.length,
+    wrappedTranscriptBytes: byteLength(artifacts.wrappedTranscript),
+    wrappedTranscriptChars: artifacts.wrappedTranscript.length,
+    wrappedTranscriptEstimatedTokens: Math.ceil(artifacts.wrappedTranscript.length / 4),
+    renderStats: renderer === "sentinel" ? artifacts.renderStats : renderStats,
+    byRecordType,
+    byRole,
+    byKind,
+    byBlockType,
+    byRecordBlock,
+    topRendered: topRendered.sort((a, b) => b.renderedBytes - a.renderedBytes).slice(0, 15),
+    topRaw: topRaw.sort((a, b) => b.rawBytes - a.rawBytes).slice(0, 15),
+    topOmitted: topOmitted.sort((a, b) => b.omittedChars - a.omittedChars).slice(0, 15),
+  };
+}
+
+function renderRendererStatsMarkdown({ inputPath, transcript, renderers, generatedAt }) {
+  const sha256 = sha256Text(transcript);
+  const reports = renderers.map((renderer) => rendererStatsForTranscript(transcript, renderer));
+  const preferred = reports.find((report) => report.renderer === "sentinel") || reports[0];
+  const lines = [];
+  lines.push("# Renderer Stats Report");
+  lines.push("");
+  lines.push("Suggested path: `docs/renderer-stats-report.md`.");
+  lines.push("");
+  lines.push("Generated: `" + generatedAt.toISOString() + "`.");
+  lines.push("");
+  lines.push("## Source");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Field", "Value"],
+      [
+        ["Input", inputPath],
+        ["Transcript SHA256", sha256],
+        ["Raw bytes", byteLength(transcript).toLocaleString()],
+        ["Logical records", String(logicalJsonlLines(transcript).length)],
+        ["char/4 token estimate", String(Math.ceil(transcript.length / 4).toLocaleString())],
+      ]
+    )
+  );
+  lines.push("");
+  lines.push("## Renderer Comparison");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Renderer", "Records", "Wrapped bytes", "Wrapped char/4 tokens", "Compressed records", "Omitted chars", "Omitted char/4 tokens"],
+      reports.map((report) => [
+        report.renderer,
+        report.recordCount.toLocaleString(),
+        report.wrappedTranscriptBytes.toLocaleString(),
+        report.wrappedTranscriptEstimatedTokens.toLocaleString(),
+        (report.renderStats.compressedToolOutputRecords || 0).toLocaleString(),
+        (report.renderStats.omittedToolOutputChars || 0).toLocaleString(),
+        Math.ceil((report.renderStats.omittedToolOutputChars || 0) / 4).toLocaleString(),
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Record Types");
+  lines.push("");
+  lines.push("Renderer used for detailed tables: `" + preferred.renderer + "`.");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Type", "Records", "Raw bytes", "Prompt chars", "Rendered bytes", "Max rendered line"],
+      sortedAggregates(preferred.byRecordType).map((item) => [
+        item.key,
+        item.records.toLocaleString(),
+        item.rawBytes.toLocaleString(),
+        item.promptChars.toLocaleString(),
+        item.renderedBytes.toLocaleString(),
+        item.maxLine || "",
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Roles");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Role", "Records", "Raw bytes", "Prompt chars", "Rendered bytes", "Max rendered line"],
+      sortedAggregates(preferred.byRole).map((item) => [
+        item.key,
+        item.records.toLocaleString(),
+        item.rawBytes.toLocaleString(),
+        item.promptChars.toLocaleString(),
+        item.renderedBytes.toLocaleString(),
+        item.maxLine || "",
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Derived Record Kinds");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Kind", "Records", "Raw bytes", "Prompt chars", "Rendered bytes", "Max rendered line"],
+      sortedAggregates(preferred.byKind).map((item) => [
+        item.key,
+        item.records.toLocaleString(),
+        item.rawBytes.toLocaleString(),
+        item.promptChars.toLocaleString(),
+        item.renderedBytes.toLocaleString(),
+        item.maxLine || "",
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Content Block Types");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Block type", "Records containing", "Blocks", "Raw chars", "Prompt-visible chars", "Max line"],
+      sortedAggregates(preferred.byBlockType).map((item) => [
+        item.key,
+        item.records.toLocaleString(),
+        item.blocks.toLocaleString(),
+        item.rawChars.toLocaleString(),
+        item.promptChars.toLocaleString(),
+        item.maxLine || "",
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Record Type x Block Type");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Record / block", "Blocks", "Raw chars", "Prompt-visible chars", "Max line"],
+      sortedAggregates(preferred.byRecordBlock, 30).map((item) => [
+        item.key,
+        item.blocks.toLocaleString(),
+        item.rawChars.toLocaleString(),
+        item.promptChars.toLocaleString(),
+        item.maxLine || "",
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Sentinel Compression");
+  lines.push("");
+  const sentinel = reports.find((report) => report.renderer === "sentinel");
+  if (sentinel) {
+    lines.push(
+      markdownTable(
+        ["Metric", "Value"],
+        [
+          ["Compressed tool-output records", sentinel.renderStats.compressedToolOutputRecords.toLocaleString()],
+          ["Original compressed body chars", sentinel.renderStats.originalToolOutputChars.toLocaleString()],
+          ["Rendered compressed body chars", sentinel.renderStats.renderedToolOutputChars.toLocaleString()],
+          ["Omitted chars", sentinel.renderStats.omittedToolOutputChars.toLocaleString()],
+          ["Omitted char/4 tokens", Math.ceil(sentinel.renderStats.omittedToolOutputChars / 4).toLocaleString()],
+        ]
+      )
+    );
+    lines.push("");
+    lines.push("### Largest Omitted Tool Outputs");
+    lines.push("");
+    lines.push(
+      markdownTable(
+        ["Line", "Type", "Role", "Omitted chars", "Original chars", "Hash", "Preview"],
+        sentinel.topOmitted.map((item) => [
+          item.line,
+          item.type,
+          item.role,
+          item.omittedChars.toLocaleString(),
+          item.originalChars.toLocaleString(),
+          item.hash,
+          item.preview.slice(0, 140),
+        ])
+      )
+    );
+  } else {
+    lines.push("Sentinel renderer was not included in this report.");
+  }
+  lines.push("");
+  lines.push("## Largest Rendered Records");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Line", "Type", "Role", "Kind", "Rendered bytes", "Raw bytes", "Hash", "Preview"],
+      preferred.topRendered.map((item) => [
+        item.line,
+        item.type,
+        item.role,
+        item.kind,
+        item.renderedBytes.toLocaleString(),
+        item.rawBytes.toLocaleString(),
+        item.hash,
+        item.preview.slice(0, 140),
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Largest Raw Records");
+  lines.push("");
+  lines.push(
+    markdownTable(
+      ["Line", "Type", "Role", "Kind", "Raw bytes", "Rendered bytes", "Hash", "Preview"],
+      preferred.topRaw.map((item) => [
+        item.line,
+        item.type,
+        item.role,
+        item.kind,
+        item.rawBytes.toLocaleString(),
+        item.renderedBytes.toLocaleString(),
+        item.hash,
+        item.preview.slice(0, 140),
+      ])
+    )
+  );
+  lines.push("");
+  lines.push("## Notes");
+  lines.push("");
+  lines.push("- `Prompt-visible chars` uses the same local text extraction path as the renderer.");
+  lines.push("- `thinking` blocks in this transcript are mostly empty prompt-visible text with raw signature metadata.");
+  lines.push("- `char/4` token counts are estimates, not provider tokenizer measurements.");
+  lines.push("- This report is generated locally and does not call any model provider.");
+  lines.push("");
+  return lines.join("\n");
 }
 
 function countUserMessages(records) {
@@ -2450,7 +2917,6 @@ function buildHandoffState({
         renderer: stats.transcriptRenderer,
       },
     ],
-    native_compaction_items: [],
     active_state: {
       current_objective: summary.current_work,
       next_step: summary.optional_next_step,
@@ -2800,14 +3266,13 @@ async function buildHandoffManifest({
       schema_fingerprint: sha256Text(JSON.stringify(createProviderSummarySchema(PROVIDER, stats.records))),
       local_validation_schema: LOCAL_VALIDATION_SCHEMA,
       local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
-      native_compaction_artifact: null,
       usage: usage || null,
     },
     artifact_policy: {
       schema: "artifact-retention-policy.v1",
       default_action: "keep-local-ignore",
       commit_policy: "do not commit raw runs or sensitive artifacts; commit concise benchmark reports only",
-      opaque_provider_outputs: "store-only-pass-through",
+      provider_outputs: "store local model outputs as evidence artifacts; do not treat provider state as portable",
     },
     artifacts,
     validation: {
@@ -3235,6 +3700,19 @@ async function main() {
     userRecords: countUserMessages(records),
     transcriptRenderer,
   };
+  if (rendererStatsReportPath) {
+    const reportPath = resolve(rendererStatsReportPath);
+    const markdown = renderRendererStatsMarkdown({
+      inputPath,
+      transcript,
+      renderers: rendererStatsRenderers,
+      generatedAt: startedAt,
+    });
+    await mkdir(dirname(reportPath), { recursive: true });
+    await writeFile(reportPath, markdown);
+    console.log(JSON.stringify({ ok: true, renderer_stats_report: reportPath }, null, 2));
+    return;
+  }
   const promptText = buildFullTranscriptPrompt({
     wrappedTranscript: lineHashArtifacts.wrappedTranscript,
     stats,

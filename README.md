@@ -103,10 +103,11 @@ EXP-08/09 are implemented as gated tracks:
   `131,087` input tokens, saving about `37,238`. That projection is not a live
   Sentinel token measurement, so `stripped` remains default until live provider
   retention and token usage are confirmed.
-- `scripts/probe-native-compaction.mjs` generates redacted dry-run, or explicit
-  `--live`, native compaction probes for OpenAI `/responses/compact`, xAI
-  `/v1/responses/compact`, and Anthropic `compact_20260112`. Native output is
-  stored as opaque provider state and does not replace local handoff artifacts.
+- Provider-native compaction endpoints are not used for the Claude handoff
+  use case. Their opaque blobs are bound to the provider/model that produced
+  them, so they cannot let a different provider/model compact a Claude session
+  into a portable handoff. The harness uses structured summaries plus local
+  state, manifests, and evidence capsules instead.
 - `scripts/judge-compaction-result.mjs` generates advisory semantic judge
   requests with strict pass/fail/unknown output, candidate hashes, and
   mechanically checked evidence refs. Deterministic gates remain authoritative.

@@ -9,9 +9,9 @@ The current harness is ahead of plain compaction in three important ways:
 - It now carries user-authored messages deterministically in `## User Messages`.
 
 The gap is that it is still mostly a summarization harness. State-of-art agent
-context systems are moving toward hybrid state: provider-native opaque
-compaction for model continuity, deterministic local evidence for audit, and a
-typed checkpoint/state graph for long-horizon recovery. To push past the state
+context systems are moving toward typed checkpoint/state graphs, deterministic
+local evidence for audit, and model-visible summaries that can be consumed by a
+different provider/model than the primary orchestrator. To push past the state
 of the art, this repo should become a restorable compaction system, not only a
 better summary writer.
 
@@ -52,7 +52,7 @@ handoff protocols.
 | [x] | P0 | Source spans are record ranges only | EXP-04 keeps model-selected record ranges but derives local char ranges, text segments, and fenced-code capsules for exact recovery. |
 | [x] | P0 | No multi-round degradation gate | EXP-06 adds deterministic 5/10/20 no-API degradation checks with state, literal, manifest, and token-growth gates. |
 | [x] | P1 | Model schema still has required unanchored arrays | EXP-05 removes provider-side legacy inventories and derives local compatibility arrays from anchored/current state. |
-| [x] | P1 | No provider-native compaction path | EXP-09 adds documented OpenAI/xAI standalone compact probes and Anthropic `compact_20260112` probes. Native output remains opaque and non-authoritative until live calibration. |
+| [x] | P1 | No cross-provider native compaction path | Provider-native endpoints return opaque blobs bound to the provider/model that produced them. They do not satisfy this repo's Claude handoff requirement, where a different provider/model compacts the session into portable state. |
 | [x] | P1 | Newest-only user-message selection | Older live safety constraints or preferences can lose to newer low-value chatter. |
 | [x] | P1 | No artifact retention/security policy | EXP-08/09 adds manifest-level artifact policy plus per-artifact retention, exposure, and redaction fields. |
 | [x] | P2 | Renderer format still uses injectable pseudo-XML | EXP-08 adds an opt-in sentinel renderer with delimiter escaping and selective old tool-output compression; `stripped` remains default pending live calibration. |
@@ -60,22 +60,24 @@ handoff protocols.
 
 ## Recommended Target Architecture
 
-### 1. Hybrid Native + Local Audit
+### 1. Portable Local Audit, Not Native Opaque Compaction
 
-Use provider-native compaction where available, but keep local artifacts as the
-auditable source of truth.
+Do not use provider-native opaque compaction endpoints for this Claude handoff
+use case. They are useful inside a single provider's conversation loop, but the
+returned compaction item is opaque and only meaningful when sent back to that
+same provider/model family. This repo needs the opposite: a different
+provider/model should be able to read a Claude session transcript and produce a
+portable handoff that Claude Code, Codex, Gemini, or another orchestrator can
+consume as normal text/state.
 
-| Provider | Native Path | Local Role |
-|---|---|---|
-| Anthropic | `compact_20260112` with `pause_after_compaction` | Add deterministic user/system/developer state after native compaction. |
-| OpenAI/Codex | `/responses/compact` compaction items | Preserve opaque compaction item plus local manifest/evidence. |
-| xAI | `/v1/responses/compact` | Prefer Responses-native compaction over Chat Completions summaries. |
-| Gemini | no equivalent opaque compaction found | Use current structured-output path plus context caching/token preflight. |
-| Bedrock Mantle | Responses support documented; compact support unproven | Probe `/responses/compact`; fall back to current chat-completions path. |
+Use provider APIs only to generate structured summaries. Keep the local
+artifacts as the source of truth:
 
-This avoids choosing between opaque speed and transparent audit. The native item
-keeps model-continuity state; the local manifest keeps replayability,
-provenance, and portability.
+| Provider Role | Use |
+|---|---|
+| Summary model | Produce strict structured JSON from the rendered transcript. |
+| Local harness | Build `handoff-state.json`, `handoff-manifest.json`, evidence capsules, hashes, and Markdown handoff. |
+| Native opaque compaction | Not applicable for cross-provider handoff; do not parse, merge, or depend on provider-native blobs. |
 
 ### 2. Canonical Handoff State
 
@@ -97,7 +99,6 @@ Suggested `handoff-state.json` shape:
   "version": 1,
   "checkpoint_id": "sha256:...",
   "source_transcripts": [],
-  "native_compaction_items": [],
   "active_state": {
     "current_objective": "",
     "next_step": "",
@@ -330,13 +331,14 @@ Current metrics are necessary but insufficient. Add these gates:
   capsules.
 - [x] Add 5/10/20-round compaction stress tests.
 
-### Phase 4: Hybrid Native Backends
+### Phase 4: Cross-Provider Backends
 
-- [x] Add Anthropic native compaction probe.
-- [x] Add OpenAI/xAI `/responses/compact` probes.
-- [ ] Probe Mantle Responses compact support.
-- [x] Store live opaque native compaction items beside local audit state when
-  `--live` is explicitly used; dry-runs record redacted request artifacts.
+- [x] Document why provider-native opaque compaction is not applicable for this
+  Claude handoff use case.
+- [x] Use OpenAI/Codex, Gemini, xAI, and Mantle only as structured summary
+  providers for portable handoff state.
+- [ ] Add repeated provider reliability/cost/latency trials for the structured
+  summary path.
 
 ### Phase 5: SOTA Evaluation Harness
 

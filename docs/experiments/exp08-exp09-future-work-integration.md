@@ -2,8 +2,8 @@
 
 This document tracks the remaining future-work items from
 `docs/state-of-art-compaction-recommendations.md`: sentinel/body-compressed
-rendering, provider-native compaction probes, artifact retention/security
-policy, and semantic judging.
+rendering, artifact retention/security policy, semantic judging, and the
+provider-native compaction decision.
 
 ## Research Evidence
 
@@ -52,9 +52,11 @@ policy, and semantic judging.
 ## Decisions
 
 - [x] Keep the deterministic local handoff as the authority. Native provider
-  compaction outputs are useful probes/artifacts, but opaque compaction blobs
-  must not replace `handoff-state.json`, `handoff-manifest.json`, evidence
-  capsules, or deterministic scorecards.
+  compaction outputs are provider/model-bound opaque blobs, so they cannot
+  satisfy this repo's requirement: use a different provider/model to compact a
+  Claude session into portable state. They must not replace
+  `handoff-state.json`, `handoff-manifest.json`, evidence capsules, or
+  deterministic scorecards.
 - [x] Add a sentinel renderer as an A/B lane, not the default. It avoids XML-ish
   body parsing ambiguity and records source line/hash metadata in a compact
   delimiter format.
@@ -63,9 +65,9 @@ policy, and semantic judging.
   evidence sidecars.
 - [x] Add artifact retention/security metadata to the manifest. Every artifact
   now declares retention class/action, exposure policy, and redaction status.
-- [x] Add provider-native compaction probes for OpenAI, xAI, and Anthropic.
-  Dry-run probes are safe by default; live probes store returned native output
-  as opaque store-only-pass-through artifacts.
+- [x] Do not keep provider-native compaction probe code. The researched native
+  endpoints are useful for same-provider loops, but not for this cross-provider
+  Claude handoff use case.
 - [x] Add a semantic judge request/validation scaffold. It is evidence-grounded
   and explicitly cannot override deterministic gates.
 - [x] Benchmark sentinel/body compression against the current stripped baseline.
@@ -76,10 +78,8 @@ policy, and semantic judging.
   (`601,907` request bytes, `168,325` provider-reported input tokens), the same
   byte/token ratio projects Sentinel at about `131,087` input tokens, saving
   about `37,238`; this is projected, not observed live Sentinel usage.
-- [x] Run native provider probe dry-runs for the three documented native paths:
-  OpenAI `/responses/compact`, xAI `/v1/responses/compact`, and Anthropic
-  `compact_20260112`. Live native calls remain explicit `--live` probes because
-  native output is opaque and not authoritative.
+- [x] Remove native provider probe code after deciding the opaque native path is
+  not applicable to the handoff goal.
 - [x] Run semantic judge dry-run plus saved-output validation after
   deterministic scorecard pass. The saved output validates strict schema,
   candidate hashes, and evidence-reference mechanics; it is not a live semantic
@@ -98,8 +98,8 @@ policy, and semantic judging.
   `handoff-manifest.json`.
 - [x] `scripts/compact-full-transcript.mjs`: record artifact retention,
   exposure, and redaction policy in `handoff-manifest.json`.
-- [x] `scripts/probe-native-compaction.mjs`: produce OpenAI/xAI/Anthropic
-  native compaction dry-run request artifacts and optional live probe artifacts.
+- [x] No native probe script is retained; provider-native opaque compaction is
+  documented as not applicable to this use case.
 - [x] `scripts/judge-compaction-result.mjs`: produce a semantic judge request
   artifact and validate saved judge output against a strict schema.
 - [x] `scripts/test-future-work.mjs`: cover the integrated future-work
@@ -125,23 +125,13 @@ policy, and semantic judging.
 - Artifact policy: all `13` manifest artifacts include retention, exposure,
   and redaction fields; manifest policy schema is
   `artifact-retention-policy.v1`.
-- Native probe artifacts:
-  - OpenAI: `runs/exp09-native-probes-noapi/openai/native-compaction-request.redacted.json`
-    uses `https://api.openai.com/v1/responses/compact`, model `gpt-5.5`, source
-    SHA256 `22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20`,
-    and `1,066` source records.
-  - xAI: `runs/exp09-native-probes-noapi/xai/native-compaction-request.redacted.json`
-    uses `https://api.x.ai/v1/responses/compact`, model
-    `grok-4.20-0309-non-reasoning`, the same source SHA256, and `1,066` source
-    records.
-  - Anthropic: `runs/exp09-native-probes-noapi/anthropic/native-compaction-request.redacted.json`
-    uses `https://api.anthropic.com/v1/messages`,
-    `anthropic-beta: compact-2026-01-12`, `compact_20260112`,
-    `pause_after_compaction: true`, `trigger.value: 50000`, and no-tool
-    compaction instructions.
-  - All native probe results set `opaque_output_policy:
-    store-only-pass-through`, `parse_encrypted_content: false`,
-    `use_as_authority: false`, and `local_handoff_remains_authority: true`.
+- Native endpoint decision:
+  - OpenAI `/responses/compact`, xAI `/v1/responses/compact`, and Anthropic
+    `compact_20260112` produce provider-native opaque state for same-provider
+    continuation.
+  - That state is not portable to Claude Code when a different provider/model
+    performs compaction, so the probe code was removed and the structured
+    summary/local-audit path remains the implementation.
 - Semantic judge artifacts:
   - `runs/exp09-semantic-judge-noapi/semantic-judge-request.json` generated a
     `semantic-compaction-judge-request.v1` request with `52` evidence refs,

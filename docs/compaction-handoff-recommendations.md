@@ -8,7 +8,7 @@ Use a hybrid handoff protocol:
 2. Add a canonical `handoff-manifest.json` and `handoff-state.json` as the harness's trusted internal state contract.
 3. Render those JSON artifacts into a freeform Markdown handoff for the receiving model; do not expose raw JSON as the primary session summary.
 4. Keep exact evidence in sidecars (`before-*.jsonl`, `line-hashes.tsv`, `rehydrated-spans.json`, `user-messages.json`) and validate those artifacts before rendering the model-visible handoff.
-4. Use provider-native opaque compaction where available, but keep the local span-grounded handoff as the audit, replay, and fallback layer.
+5. Do not rely on provider-native opaque compaction for this handoff. The compacted blob is bound to the provider/model that produced it and is not portable to a Claude session compacted by a different provider/model.
 
 This makes prose summary useful but non-authoritative. The authoritative state is typed, hash-addressed, and locally validated.
 
@@ -46,8 +46,7 @@ The best protocol for this repo is a manifest-first checkpoint:
   "provider": {
     "provider": "gemini",
     "model": "gemini-3.5-flash",
-    "schema_fingerprint": "...",
-    "native_compaction_artifact": null
+    "schema_fingerprint": "..."
   },
   "artifacts": [
     {
@@ -148,7 +147,7 @@ Gaps:
 - User-message retention is chronological. It does not yet prioritize active safety constraints, current preferences, correction chains, and the latest explicit request ahead of low-value recent chatter.
 - Repeated compaction needs an authority model. A later run should distinguish raw-source spans from prior-summary spans so summary-derived claims do not become primary evidence.
 - The stripped prompt renderer uses XML-like record tags around unescaped body text. That is readable, but an alternate sentinel renderer should be benchmarked to reduce delimiter confusion.
-- Provider-native compaction is not yet part of the runtime path. The current local flow is auditable and portable, but it resends the full rendered transcript and cannot preserve provider-internal opaque state.
+- Provider-native compaction is intentionally not part of the runtime path. The current local flow is auditable and portable, which is required when a different provider/model compacts a Claude session.
 - Quality validation is mostly structural. There is no multi-round sufficiency benchmark that proves the handoff still preserves active constraints, exact literals, open tasks, and next-step usability after repeated compactions.
 
 ## Top 3 Changes
@@ -161,9 +160,9 @@ Gaps:
 
    Add `user_intent_events` with `kind`, `status`, `priority`, `supersedes`, source line, and record hash. Use priority-aware retention so active safety rules, current constraints, durable preferences, correction chains, and current requests survive before ordinary recent messages. Mark spans as `raw-source`, `summary-derived`, or `preserved-tail`.
 
-3. Add hybrid native compaction plus multi-round evals.
+3. Add multi-round evals and provider structured-summary benchmarks.
 
-   Use Anthropic `compact_20260112` and OpenAI/xAI Responses compaction when available, while preserving the local span-grounded state as audit and fallback. Add repeated-compaction tests that compact the same trace 5 to 20 times and fail on missing active constraints, lost exact literals, stale superseded rules, invalid artifact hashes, or insufficient next-step state.
+   Use external providers as structured summary writers, not native opaque compaction providers. Add repeated-compaction tests that compact the same trace 5 to 20 times and fail on missing active constraints, lost exact literals, stale superseded rules, invalid artifact hashes, or insufficient next-step state.
 
 ## Secondary Changes
 

@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 
 const repoRoot = resolve(new URL("..", import.meta.url).pathname);
 const compactScript = join(repoRoot, "scripts", "compact-full-transcript.mjs");
-const nativeProbeScript = join(repoRoot, "scripts", "probe-native-compaction.mjs");
 const judgeScript = join(repoRoot, "scripts", "judge-compaction-result.mjs");
 
 function sha256(text) {
@@ -143,45 +142,6 @@ try {
     manifest.provider?.renderer_policy?.transcript_renderer === "sentinel",
     "renderer policy missing from manifest"
   );
-
-  for (const provider of ["openai", "xai", "anthropic"]) {
-    const probeOut = join(tmp, "native-" + provider);
-    const stdout = runNode([
-      nativeProbeScript,
-      "--provider",
-      provider,
-      "--input",
-      inputPath,
-      "--out-dir",
-      probeOut,
-      "--dry-run",
-    ]);
-    const result = JSON.parse(stdout);
-    assert(result.ok === true && result.dry_run === true, provider + " native probe dry run failed");
-    const request = await readJson(join(probeOut, "native-compaction-request.redacted.json"));
-    assert(request.provider === provider, provider + " native request provider mismatch");
-    assert(request.safety?.opaque_output_policy === "store-only-pass-through", provider + " opaque policy missing");
-    if (provider === "openai") {
-      assert(request.endpoint.endsWith("/responses/compact"), "openai native probe must use standalone compact endpoint");
-    }
-    if (provider === "xai") {
-      assert(request.endpoint.endsWith("/responses/compact"), "xai native probe must use standalone compact endpoint");
-    }
-    if (provider === "anthropic") {
-      assert(
-        request.headers?.["anthropic-beta"] === "compact-2026-01-12",
-        "anthropic native probe beta header missing"
-      );
-      assert(
-        request.body?.context_management?.edits?.[0]?.type === "compact_20260112",
-        "anthropic native probe compaction edit missing"
-      );
-      assert(
-        request.body?.context_management?.edits?.[0]?.pause_after_compaction === true,
-        "anthropic native probe pause_after_compaction missing"
-      );
-    }
-  }
 
   const judgeOut = join(tmp, "judge");
   const judgeStdout = runNode([

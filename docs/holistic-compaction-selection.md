@@ -24,9 +24,9 @@ tracks:
     policy for every generated artifact.
 12. `--transcript-renderer sentinel` is available as an opt-in A/B renderer with
     delimiter escaping and selective old tool-output compression.
-13. `scripts/probe-native-compaction.mjs` can generate redacted dry-run probes,
-    or explicit `--live` probes, for OpenAI `/responses/compact`, xAI
-    `/v1/responses/compact`, and Anthropic `compact_20260112`.
+13. Provider-native compaction endpoints are not part of the selected design:
+    their opaque blobs are provider/model-bound and cannot make a Claude
+    session portable to a different compaction provider/model.
 14. `scripts/judge-compaction-result.mjs` generates strict advisory semantic
     judge requests and validates saved judge outputs against candidate hashes
     and evidence refs.
@@ -48,7 +48,7 @@ gates until live provider runs prove retention is no worse than `stripped`.
 | EXP-06 multi-round degradation gate | Accepted | 23,022 | Adds verified Evidence Index and proves 5/10/20 no-API recompactions preserve state and exact literals | Default-tail footprint rises to preserve exact literals across rounds. |
 | EXP-07 scorecard | Accepted | 23,022 | Scores integrity, state retention, exact literal recovery, unsupported claims, and footprint | Deterministic fixture is not a semantic LLM judge. |
 | EXP-08 sentinel renderer/body compression | Accepted opt-in | 5,427 no-tail replay | Reduces dry-run request body from 601,526 to 468,748 bytes and omits 137,749 chars from old tool output (~34,437 char/4 tokens). Using the prior live stripped Codex byte/token ratio projects about 131,087 input tokens versus 168,325 observed stripped input tokens. | Keep `stripped` as default until a live provider run passes the scorecard; projected Sentinel input tokens are not a live measurement. |
-| EXP-09 native compaction probes | Accepted probe | n/a | Adds documented OpenAI/xAI standalone compact and Anthropic beta compact probes with opaque-output safety policy | Native output is provider-specific and non-authoritative; live calibration is explicit. |
+| EXP-09 native compaction endpoints | Not applicable | n/a | Documents why opaque provider-native compaction blobs cannot serve this cross-provider Claude handoff use case | Use structured summaries plus local state/evidence instead. |
 | EXP-09 semantic judge scaffold | Accepted advisory | n/a | Adds strict pass/fail/unknown judge schema, candidate hashes, evidence refs, and saved-output validation | Does not override deterministic gates and needs live calibration before CI enforcement. |
 
 ## Verification Evidence
@@ -67,7 +67,7 @@ gates until live provider runs prove retention is no worse than `stripped`.
 | Scorecard | EXP-07 scores current selected baseline 100/100 and round-20 no-tail state 90/100. |
 | Sentinel renderer | EXP-08 dry-run request body is 468,748 bytes versus 601,526 for stripped; omitted tool output is 137,749 chars (~34,437 char/4 tokens). The prior live stripped Codex run reported 168,325 input tokens at 601,907 request bytes, so Sentinel projects to about 131,087 input tokens if the same ratio holds. No live Sentinel input-token count has been observed. |
 | Artifact policy | EXP-08 manifest has policy schema `artifact-retention-policy.v1`; all 13 artifacts include retention, exposure, and redaction fields. |
-| Native probes | EXP-09 dry-runs generated redacted request artifacts for OpenAI `/responses/compact`, xAI `/v1/responses/compact`, and Anthropic `compact_20260112`, all tied to source SHA256 `22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20`. |
+| Native endpoints | Provider-native opaque blobs are not portable across providers/models, so they do not satisfy the requirement to compact a Claude session with a different compaction model. |
 | Semantic judge | EXP-09 generated a `semantic-compaction-judge-request.v1` with 52 evidence refs and validated a saved strict JSON judge output with 4 verdicts and `validation_error: null`. |
 
 ## Current Routing
@@ -88,8 +88,6 @@ The following tracks are implemented but not default behavior:
 
 - EXP-08 sentinel renderer/body compression is opt-in pending live provider
   retention and token-usage confirmation.
-- EXP-09 provider-native compaction probes are explicit probe artifacts; opaque
-  provider output does not replace local handoff state.
 - EXP-09 semantic judging is advisory until calibrated against labeled good/bad
   compactions.
 
