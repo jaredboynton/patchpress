@@ -108,9 +108,12 @@ EXP-08/09 are implemented as gated tracks:
   them, so they cannot let a different provider/model compact a Claude session
   into a portable handoff. The harness uses structured summaries plus local
   state, manifests, and evidence capsules instead.
-- `scripts/judge-compaction-result.mjs` generates advisory semantic judge
-  requests with strict pass/fail/unknown output, candidate hashes, and
-  mechanically checked evidence refs. Deterministic gates remain authoritative.
+- `scripts/judge-compaction-result.mjs` runs an advisory semantic judge through
+  the Codex Responses backend by default, using `gpt-5.5`, medium reasoning,
+  priority service tier, strict pass/fail/unknown structured output, candidate
+  hashes, and mechanically checked evidence refs. `--dry-run` still emits only
+  the request artifact, and `--from-output` validates a saved judge response.
+  Deterministic gates remain authoritative.
 
 Current no-API selected baseline: `23,022` estimated tokens in
 `after-compact.jsonl`, `50` evidence capsules, `1,850` text segments, `23` code

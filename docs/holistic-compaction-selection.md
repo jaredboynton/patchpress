@@ -27,9 +27,11 @@ tracks:
 13. Provider-native compaction endpoints are not part of the selected design:
     their opaque blobs are provider/model-bound and cannot make a Claude
     session portable to a different compaction provider/model.
-14. `scripts/judge-compaction-result.mjs` generates strict advisory semantic
-    judge requests and validates saved judge outputs against candidate hashes
-    and evidence refs.
+14. `scripts/judge-compaction-result.mjs` runs a strict advisory semantic judge
+    through the Codex Responses backend by default, using `gpt-5.5`, medium
+    reasoning, and priority service tier. It also supports request-only
+    `--dry-run` and saved-output `--from-output` validation against candidate
+    hashes and evidence refs.
 
 This is the best current implementation because it closes the highest-risk P0
 handoff/state gaps without increasing the default compact transcript footprint,
@@ -49,7 +51,7 @@ gates until live provider runs prove retention is no worse than `stripped`.
 | EXP-07 scorecard | Accepted | 23,022 | Scores integrity, state retention, exact literal recovery, unsupported claims, and footprint | Deterministic fixture is not a semantic LLM judge. |
 | EXP-08 sentinel renderer/body compression | Accepted opt-in | 5,427 no-tail replay | Reduces dry-run request body from 601,526 to 468,748 bytes and omits 137,749 chars from old tool output (~34,437 char/4 tokens). Using the prior live stripped Codex byte/token ratio projects about 131,087 input tokens versus 168,325 observed stripped input tokens. | Keep `stripped` as default until a live provider run passes the scorecard; projected Sentinel input tokens are not a live measurement. |
 | EXP-09 native compaction endpoints | Not applicable | n/a | Documents why opaque provider-native compaction blobs cannot serve this cross-provider Claude handoff use case | Use structured summaries plus local state/evidence instead. |
-| EXP-09 semantic judge scaffold | Accepted advisory | n/a | Adds strict pass/fail/unknown judge schema, candidate hashes, evidence refs, and saved-output validation | Does not override deterministic gates and needs live calibration before CI enforcement. |
+| EXP-09 semantic judge | Accepted advisory | n/a | Adds a Codex-backed `gpt-5.5` medium-reasoning live judge with strict pass/fail/unknown schema, candidate hashes, evidence refs, dry-run request artifacts, and saved-output validation | Does not override deterministic gates and needs repeated live calibration before CI enforcement. |
 
 ## Verification Evidence
 

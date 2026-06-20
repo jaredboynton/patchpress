@@ -342,8 +342,9 @@ Current metrics are necessary but insufficient. Add these gates:
 
 ### Phase 5: SOTA Evaluation Harness
 
-- [x] Add advisory semantic judge request/validation scaffold with strict
-  output schema and mechanically checked evidence refs.
+- [x] Add advisory semantic judge request/validation path with Codex `gpt-5.5`
+  medium reasoning, strict output schema, and mechanically checked evidence
+  refs.
 - [ ] Add trajectory-sufficiency judge using next-k actions.
 - [ ] Add fact injection/recall tests using LongMemEval-style categories.
 - [ ] Add provider reliability/cost latency repeated trials.

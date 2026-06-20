@@ -68,8 +68,10 @@ provider-native compaction decision.
 - [x] Do not keep provider-native compaction probe code. The researched native
   endpoints are useful for same-provider loops, but not for this cross-provider
   Claude handoff use case.
-- [x] Add a semantic judge request/validation scaffold. It is evidence-grounded
-  and explicitly cannot override deterministic gates.
+- [x] Add a semantic judge request/validation path. It is evidence-grounded,
+  uses the Codex Responses backend by default with `gpt-5.5`, medium reasoning,
+  and priority service tier, and explicitly cannot override deterministic
+  gates.
 - [x] Benchmark sentinel/body compression against the current stripped baseline.
   Current dry-run evidence: `stripped` request body `601,526` bytes versus
   `sentinel` request body `468,748` bytes, with `11` old tool-output records
@@ -82,8 +84,8 @@ provider-native compaction decision.
   not applicable to the handoff goal.
 - [x] Run semantic judge dry-run plus saved-output validation after
   deterministic scorecard pass. The saved output validates strict schema,
-  candidate hashes, and evidence-reference mechanics; it is not a live semantic
-  quality claim.
+  candidate hashes, and evidence-reference mechanics; live Codex judge calls use
+  the same request plus strict structured output.
 - [x] Update final selection docs after benchmark/probe evidence exists.
 
 ## Implementation Checklist
@@ -101,7 +103,8 @@ provider-native compaction decision.
 - [x] No native probe script is retained; provider-native opaque compaction is
   documented as not applicable to this use case.
 - [x] `scripts/judge-compaction-result.mjs`: produce a semantic judge request
-  artifact and validate saved judge output against a strict schema.
+  artifact, run live Codex `gpt-5.5` medium-reasoning judging by default, and
+  validate saved or live judge output against a strict schema.
 - [x] `scripts/test-future-work.mjs`: cover the integrated future-work
   contracts.
 - [x] `scripts/test-sentinel-renderer.mjs`: cover sentinel rendering,
