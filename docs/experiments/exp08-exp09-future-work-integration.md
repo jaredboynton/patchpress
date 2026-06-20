@@ -68,7 +68,10 @@ policy, and semantic judging.
   as opaque store-only-pass-through artifacts.
 - [x] Add a semantic judge request/validation scaffold. It is evidence-grounded
   and explicitly cannot override deterministic gates.
-- [ ] Benchmark sentinel/body compression against the current stripped baseline.
+- [x] Benchmark sentinel/body compression against the current stripped baseline.
+  Current dry-run evidence: `stripped` request body `601,526` bytes versus
+  `sentinel` request body `468,748` bytes, with `11` old tool-output records
+  compressed and `137,749` chars omitted from the model-visible prompt.
 - [ ] Run native provider probes when credentials and desired provider/model are
   selected.
 - [ ] Run semantic judge live or with a saved judge output after deterministic
@@ -96,10 +99,17 @@ policy, and semantic judging.
 - [x] `scripts/test-sentinel-renderer.mjs`: cover sentinel rendering,
   body-compression stats, and sentinel delimiter escaping.
 
-## Evidence To Fill During Benchmarking
+## Benchmark Evidence
 
-- Sentinel dry-run request-body bytes:
-- Stripped dry-run request-body bytes:
-- Sentinel no-API replay score:
+- Sentinel dry-run request-body bytes: `468,748`.
+- Stripped dry-run request-body bytes: `601,526`.
+- Sentinel no-API replay score: `100/100`, with `50` evidence capsules, `8`
+  user intent events, `0` bad manifest hashes, and no missing required
+  literals.
+- Sentinel no-API replay footprint: `5,427` estimated after tokens and
+  `22,242` after bytes with `--preserve-tail 0`.
+- Artifact policy: all `13` manifest artifacts include retention, exposure,
+  and redaction fields; manifest policy schema is
+  `artifact-retention-policy.v1`.
 - Native probe artifacts:
 - Semantic judge artifacts:
