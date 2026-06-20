@@ -169,9 +169,25 @@ const transcriptRenderer = argValue(
   "--transcript-renderer",
   process.env.COMPACT_TRANSCRIPT_RENDERER || "stripped"
 );
-if (transcriptRenderer !== "stripped" && transcriptRenderer !== "jsonl") {
-  throw new Error("Expected --transcript-renderer to be stripped or jsonl");
+if (transcriptRenderer !== "stripped" && transcriptRenderer !== "sentinel" && transcriptRenderer !== "jsonl") {
+  throw new Error("Expected --transcript-renderer to be stripped, sentinel, or jsonl");
 }
+const toolOutputCompressAfter =
+  argValue("--tool-output-compress-after") === undefined
+    ? intArg("--sentinel-tool-output-keep-recent", 64)
+    : intArg("--tool-output-compress-after", 64);
+const toolOutputCompressMinChars =
+  argValue("--tool-output-compress-min-chars") === undefined
+    ? intArg("--sentinel-old-tool-output-collapse-at", 2400)
+    : intArg("--tool-output-compress-min-chars", 2400);
+const toolOutputCompressHeadChars =
+  argValue("--tool-output-compress-head-chars") === undefined
+    ? intArg("--sentinel-old-tool-output-head-chars", 900)
+    : intArg("--tool-output-compress-head-chars", 900);
+const toolOutputCompressTailChars =
+  argValue("--tool-output-compress-tail-chars") === undefined
+    ? intArg("--sentinel-old-tool-output-tail-chars", 500)
+    : intArg("--tool-output-compress-tail-chars", 500);
 const startedAt = new Date();
 const defaultOutDir = join(
   "runs",
@@ -295,6 +311,50 @@ function recordTextForPrompt(record) {
   return content.map(renderPartForPrompt).filter(Boolean).join("\n\n");
 }
 
+function isToolOutputRecord(record) {
+  const content = record?.message?.content ?? record?.content;
+  if (record?.toolUseResult || record?.sourceToolAssistantUUID) return true;
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => part?.type === "tool_result" || part?.tool_use_id);
+}
+
+function escapeSentinelBody(text) {
+  return String(text || "").replace(/^(@@(?:RECORD|END_RECORD)\b)/gm, " $1");
+}
+
+function compactOldToolOutputBody(body, entry) {
+  const text = String(body || "");
+  if (text.length <= toolOutputCompressMinChars) return { body: text, compressed: false };
+  const head = text.slice(0, toolOutputCompressHeadChars).replace(/\n$/, "");
+  const tail = text
+    .slice(Math.max(text.length - toolOutputCompressTailChars, toolOutputCompressHeadChars))
+    .replace(/^\n/, "")
+    .replace(/\n$/, "");
+  const omitted = Math.max(text.length - head.length - tail.length, 0);
+  return {
+    body: [
+      head,
+      "",
+      "[tool output compressed: original_chars=" +
+        text.length +
+        " omitted_chars=" +
+        omitted +
+        " line=" +
+        entry.lineNumber +
+        " body_sha256=" +
+        sha256Text(text) +
+        " record_sha256=" +
+        entry.hash +
+        "]",
+      "",
+      tail,
+    ].join("\n"),
+    compressed: true,
+    originalChars: text.length,
+    omittedChars: omitted,
+  };
+}
+
 function renderStrippedRecord(entry) {
   let record;
   try {
@@ -319,8 +379,46 @@ function renderStrippedRecord(entry) {
   return "<record " + attrs.join(" ") + ">\n" + body + "\n</record>";
 }
 
+function renderSentinelRecord(entry, context) {
+  let record;
+  try {
+    record = JSON.parse(entry.raw);
+  } catch {
+    const line = String(entry.lineNumber).padStart(6, "0");
+    return "@@RECORD line=" + line + " kind=unparsed sha256=" + entry.hash + "\n" + entry.raw + "\n@@END_RECORD line=" + line;
+  }
+  const fields = [
+    "line=" + String(entry.lineNumber).padStart(6, "0"),
+    "type=" + String(record.type || "unknown").replace(/\s+/g, "_"),
+  ];
+  if (record.message?.role) fields.push("role=" + String(record.message.role).replace(/\s+/g, "_"));
+  if (record.timestamp) fields.push("ts=" + String(record.timestamp).replace(/\s+/g, "_"));
+  let body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+  const oldToolOutput =
+    isToolOutputRecord(record) && toolOutputCompressAfter > 0 && entry.lineNumber <= context.recordCount - toolOutputCompressAfter;
+  if (oldToolOutput) {
+    const compacted = compactOldToolOutputBody(body, entry);
+    if (compacted.compressed) {
+      context.stats.compressedToolOutputRecords += 1;
+      context.stats.originalToolOutputChars += compacted.originalChars;
+      context.stats.omittedToolOutputChars += compacted.omittedChars;
+    }
+    body = compacted.body;
+  }
+  body = escapeSentinelBody(body);
+  if (oldToolOutput) context.stats.renderedToolOutputChars += body.length;
+  fields.push("chars=" + body.length);
+  return "@@RECORD " + fields.join(" ") + "\n" + body + "\n@@END_RECORD line=" + String(entry.lineNumber).padStart(6, "0");
+}
+
 function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
   const lines = logicalJsonlLines(transcript);
+  const renderStats = {
+    compressedToolOutputRecords: 0,
+    originalToolOutputChars: 0,
+    renderedToolOutputChars: 0,
+    omittedToolOutputChars: 0,
+  };
   const entries = lines.map((line, idx) => {
     let searchableText = line;
     try {
@@ -349,6 +447,9 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
       .map((entry) => {
         const line = String(entry.lineNumber).padStart(6, "0");
         if (renderer === "stripped") return renderStrippedRecord(entry);
+        if (renderer === "sentinel") {
+          return renderSentinelRecord(entry, { recordCount: entries.length, stats: renderStats });
+        }
         return '<record line="' + line + '">' + entry.raw + "</record>";
       })
       .join("\n") + "\n";
@@ -364,7 +465,7 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
       })
       .join("\n") +
     "\n";
-  return { entries, wrappedTranscript, tsv };
+  return { entries, wrappedTranscript, tsv, renderStats };
 }
 
 function countUserMessages(records) {
@@ -788,6 +889,20 @@ function createLocalValidationSpec() {
   };
 }
 
+function rendererEvidenceInstructions(renderer) {
+  if (renderer === "sentinel") {
+    return [
+      "- The transcript is wrapped as sentinel records beginning with @@RECORD line=000001 ... and ending with @@END_RECORD line=000001.",
+      "- Use one-based logical JSONL record numbers from the @@RECORD sentinel line for every source span.",
+      "- Some older tool-output records may be body-compressed with an explicit sha256 marker; cite the record line when that compressed output matters, because the harness rehydrates exact content from the source JSONL.",
+    ];
+  }
+  return [
+    '- The transcript is wrapped as <record line="000001">...</record>.',
+    "- Use one-based logical JSONL record numbers from those wrappers for every source span.",
+  ];
+}
+
 function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
   const customInstructionsBlock = customSummaryInstructions.trim()
     ? [
@@ -821,8 +936,7 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     ...compactAndBlock,
     "",
     "Evidence span format:",
-    "- The transcript is wrapped as <record line=\"000001\">...</record>.",
-    "- Use one-based logical JSONL record numbers from those wrappers for every source span.",
+    ...rendererEvidenceInstructions(stats.transcriptRenderer),
     "- summary_blocks is the primary structured output. It must be ordered exactly as the continuation summary should read.",
     "- Every summary_blocks item must include one or more source_spans pointing to the exact supporting record ranges.",
     "- The authoritative source record is the cited source_spans plus harness rehydration, not long verbatim body text.",
@@ -2587,6 +2701,48 @@ async function buildHandoffManifest({
   usage,
   paths,
 }) {
+  const policyByKind = {
+    source_transcript: {
+      retention: { class: "ephemeral-sensitive-source", action: "keep-local-ignore", days: 14 },
+      exposure: { model_visible: false, user_visible: false, commit_safe: false },
+      redaction: { status: "unredacted", reason: "canonical replay source" },
+    },
+    state: {
+      retention: { class: "checkpoint-state", action: "keep-local-ignore", days: 90 },
+      exposure: { model_visible: true, user_visible: true, commit_safe: false },
+      redaction: { status: "unredacted", reason: "canonical handoff state may include user text" },
+    },
+    rendered_handoff: {
+      retention: { class: "handoff-view", action: "keep-local-ignore", days: 90 },
+      exposure: { model_visible: true, user_visible: true, commit_safe: false },
+      redaction: { status: "bounded", reason: "user messages are collapsed and evidence is indexed" },
+    },
+    user_messages: {
+      retention: { class: "ephemeral-sensitive-source", action: "keep-local-ignore", days: 14 },
+      exposure: { model_visible: false, user_visible: false, commit_safe: false },
+      redaction: { status: "unredacted", reason: "deterministic full user-message sidecar" },
+    },
+    request_log: {
+      retention: { class: "redacted-request-log", action: "keep-local-ignore", days: 30 },
+      exposure: { model_visible: false, user_visible: true, commit_safe: false },
+      redaction: { status: "redacted", reason: "credentials and full prompt are omitted" },
+    },
+    events: {
+      retention: { class: "provider-output-sensitive", action: "keep-local-ignore", days: 30 },
+      exposure: { model_visible: false, user_visible: false, commit_safe: false },
+      redaction: { status: "unredacted", reason: "provider stream may contain model output and metadata" },
+    },
+    model_output: {
+      retention: { class: "provider-output-sensitive", action: "keep-local-ignore", days: 30 },
+      exposure: { model_visible: false, user_visible: false, commit_safe: false },
+      redaction: { status: "unredacted", reason: "provider output replay source" },
+    },
+  };
+  const defaultPolicy = {
+    retention: { class: "derived-artifact", action: "keep-local-ignore", days: 90 },
+    exposure: { model_visible: false, user_visible: true, commit_safe: false },
+    redaction: { status: "derived", reason: "derived from source transcript and model output" },
+  };
   const artifactSpecs = [
     ["source_transcript", paths.beforePath, "raw-source", true],
     ["state", paths.handoffStatePath, "validated-local", true],
@@ -2604,6 +2760,7 @@ async function buildHandoffManifest({
   ];
   const artifacts = [];
   for (const [kind, path, authority, sensitive] of artifactSpecs) {
+    const policy = policyByKind[kind] || defaultPolicy;
     artifacts.push({
       kind,
       path: basename(path),
@@ -2611,6 +2768,9 @@ async function buildHandoffManifest({
       sha256: await sha256File(path),
       authority,
       sensitive,
+      retention: policy.retention,
+      exposure: policy.exposure,
+      redaction: policy.redaction,
     });
   }
   return {
@@ -2630,11 +2790,24 @@ async function buildHandoffManifest({
       provider: PROVIDER,
       model: MODEL,
       endpoint: requestMeta.endpoint,
+      renderer_policy: {
+        transcript_renderer: stats.transcriptRenderer,
+        tool_output_compress_after: toolOutputCompressAfter,
+        tool_output_compress_min_chars: toolOutputCompressMinChars,
+        tool_output_compress_head_chars: toolOutputCompressHeadChars,
+        tool_output_compress_tail_chars: toolOutputCompressTailChars,
+      },
       schema_fingerprint: sha256Text(JSON.stringify(createProviderSummarySchema(PROVIDER, stats.records))),
       local_validation_schema: LOCAL_VALIDATION_SCHEMA,
       local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
       native_compaction_artifact: null,
       usage: usage || null,
+    },
+    artifact_policy: {
+      schema: "artifact-retention-policy.v1",
+      default_action: "keep-local-ignore",
+      commit_policy: "do not commit raw runs or sensitive artifacts; commit concise benchmark reports only",
+      opaque_provider_outputs: "store-only-pass-through",
     },
     artifacts,
     validation: {
@@ -3097,8 +3270,22 @@ async function main() {
     transcript_renderer: transcriptRenderer,
     estimated_char_div_4_tokens: stats.approxTokens,
     request_body_bytes: Buffer.byteLength(bodyText),
+    wrapped_transcript_bytes: Buffer.byteLength(lineHashArtifacts.wrappedTranscript),
+    wrapped_transcript_estimated_tokens: Math.ceil(lineHashArtifacts.wrappedTranscript.length / 4),
     live_output: liveOutput,
     preserve_tail: preserveTailCount,
+    tool_output_compress_after: transcriptRenderer === "sentinel" ? toolOutputCompressAfter : null,
+    tool_output_compress_min_chars: transcriptRenderer === "sentinel" ? toolOutputCompressMinChars : null,
+    tool_output_compress_head_chars: transcriptRenderer === "sentinel" ? toolOutputCompressHeadChars : null,
+    tool_output_compress_tail_chars: transcriptRenderer === "sentinel" ? toolOutputCompressTailChars : null,
+    tool_output_compressed_records:
+      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.compressedToolOutputRecords : null,
+    tool_output_original_chars:
+      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.originalToolOutputChars : null,
+    tool_output_rendered_chars:
+      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.renderedToolOutputChars : null,
+    tool_output_omitted_chars:
+      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.omittedToolOutputChars : null,
     custom_summary_instructions: customSummaryInstructions.trim() || null,
     compact_and_prompt: compactAndPrompt.trim() || null,
     from_output: fromOutputPath ? resolve(fromOutputPath) : null,
