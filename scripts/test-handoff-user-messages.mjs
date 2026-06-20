@@ -25,6 +25,12 @@ function summaryFor(transcriptText, lineCount, label) {
         body: "Synthetic compaction summary for " + label + ".",
         source_spans: [{ start_line: 1, end_line: 1 }],
       },
+      {
+        section: "Tool Evidence",
+        format: "paragraph",
+        body: "Synthetic structured tool evidence for " + label + ".",
+        source_spans: [{ start_line: Math.min(2, lineCount), end_line: Math.min(2, lineCount) }],
+      },
     ],
     rules_and_invariants: [],
     plans_and_task_state: [],
@@ -222,7 +228,20 @@ try {
       type: "assistant",
       uuid: "a-1",
       timestamp: "2026-06-20T00:00:01.000Z",
-      message: { role: "assistant", content: "Acknowledged." },
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            name: "Edit",
+            input: {
+              file_path: "/tmp/tool-evidence-alpha.txt",
+              old_string: "before",
+              new_string: "after",
+            },
+          },
+        ],
+      },
     },
     {
       type: "user",
@@ -274,6 +293,10 @@ try {
   assertIncludes(firstSummaryText, "Second instruction begins", "first handoff");
   assertIncludes(firstSummaryText, "preserve gamma.", "first handoff");
   assertIncludes(firstSummaryText, "[... omitted ", "first handoff");
+  assert(
+    firstRehydratedSpans.some((span) => span.extracted_text.includes("tool-evidence-alpha")),
+    "first handoff structured tool evidence missing"
+  );
   assertCanonicalHandoffArtifacts({
     state: firstState,
     stateText: firstStateText,

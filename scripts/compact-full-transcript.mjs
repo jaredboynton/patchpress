@@ -1638,17 +1638,53 @@ function lineHash(lineHashArtifacts, lineNumber) {
   return lineHashArtifacts.entries[lineNumber - 1]?.hash;
 }
 
+function stableJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function extractContentPartText(part) {
+  if (!part || typeof part !== "object") return "";
+  if (typeof part.text === "string") return part.text;
+  if (typeof part.content === "string") return part.content;
+  if (Array.isArray(part.content)) {
+    const nested = part.content
+      .map((nestedPart) => extractContentPartText(nestedPart))
+      .filter((text) => text.length > 0);
+    if (nested.length > 0) return nested.join("\n\n");
+  }
+  if (part.type === "tool_use") {
+    return stableJson({
+      type: part.type,
+      name: part.name || null,
+      input: part.input || null,
+    });
+  }
+  if (part.type === "tool_result") {
+    return stableJson({
+      type: part.type,
+      tool_use_id: part.tool_use_id || null,
+      content: part.content || null,
+    });
+  }
+  if (part.input && typeof part.input === "object") return stableJson(part.input);
+  return "";
+}
+
 function extractRecordText(record) {
   if (!record || typeof record !== "object") return "";
   if (typeof record.content === "string") return record.content;
   if (typeof record.message?.content === "string") return record.message.content;
   if (Array.isArray(record.message?.content)) {
-    const texts = [];
-    for (const part of record.message.content) {
-      if (typeof part?.text === "string") texts.push(part.text);
-    }
+    const texts = record.message.content
+      .map((part) => extractContentPartText(part))
+      .filter((text) => text.length > 0);
     if (texts.length > 0) return texts.join("\n");
   }
+  if (record.toolUseResult) return stableJson(record.toolUseResult);
   if (record.attachment) return JSON.stringify(record.attachment, null, 2);
   return "";
 }
