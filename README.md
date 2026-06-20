@@ -47,10 +47,20 @@ node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown > docs/s
 
 ### Handoff user messages
 
-`after-compact.jsonl` now includes a deterministic `## User Messages` section in
-the compact summary record. The model does not write this section. The harness
-extracts real user-authored messages, collapses long messages with head/tail
-preservation, and carries the selected ledger forward across later compactions.
+Each run writes a canonical handoff bundle:
+
+- `handoff-state.json`: typed state with `user_intent_events`, active task
+  state, rules, promises, and verified evidence capsules.
+- `handoff-manifest.json`: artifact paths, SHA256s, authority labels,
+  sensitivity flags, provider metadata, and validation status.
+- `handoff.md`: the model-visible Markdown handoff rendered from the canonical
+  state.
+
+`after-compact.jsonl` remains the Claude-compatible resume wrapper. Its compact
+summary record includes the rendered `handoff.md` content plus typed pointers to
+the manifest/state artifacts. The harness extracts real user-authored messages,
+collapses long messages with head/tail preservation, and carries selected
+`user_intent_events` forward across later compactions.
 
 Bounds:
 
@@ -63,7 +73,8 @@ Bounds:
 
 Newest messages win when limits are hit; selected messages are rendered back in
 chronological order. The sidecar `user-messages.json` records current, carried,
-and selected messages plus the applied limits.
+and selected messages plus the applied limits. Legacy XML user-message ledgers
+are parsed only from trusted compact summary records.
 
 ## Benchmark Results
 
