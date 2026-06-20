@@ -81,8 +81,8 @@ trusted compact summary records.
 
 ### Experiment gates
 
-The current selected local implementation is the EXP-01 + EXP-03 + EXP-04 +
-EXP-05 + EXP-06 + EXP-07 stack:
+The current selected default local implementation is the EXP-01 + EXP-03 +
+EXP-04 + EXP-05 + EXP-06 + EXP-07 stack:
 
 - typed handoff state and manifest;
 - priority-aware user-message retention;
@@ -91,6 +91,21 @@ EXP-05 + EXP-06 + EXP-07 stack:
 - multi-round 5/10/20 no-API degradation gate;
 - deterministic scorecard for integrity, state retention, exact literals,
   unsupported high-risk literals, and footprint.
+
+EXP-08/09 are implemented as gated tracks:
+
+- `--transcript-renderer sentinel` is an opt-in A/B renderer with delimiter
+  escaping and selective old tool-output compression. Current dry-run evidence
+  reduced request body size from `601,526` to `468,748` bytes and passed the
+  no-API scorecard, but `stripped` remains default until live provider retention
+  is confirmed.
+- `scripts/probe-native-compaction.mjs` generates redacted dry-run, or explicit
+  `--live`, native compaction probes for OpenAI `/responses/compact`, xAI
+  `/v1/responses/compact`, and Anthropic `compact_20260112`. Native output is
+  stored as opaque provider state and does not replace local handoff artifacts.
+- `scripts/judge-compaction-result.mjs` generates advisory semantic judge
+  requests with strict pass/fail/unknown output, candidate hashes, and
+  mechanically checked evidence refs. Deterministic gates remain authoritative.
 
 Current no-API selected baseline: `23,022` estimated tokens in
 `after-compact.jsonl`, `50` evidence capsules, `1,850` text segments, `23` code

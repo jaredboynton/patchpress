@@ -52,10 +52,10 @@ handoff protocols.
 | [x] | P0 | Source spans are record ranges only | EXP-04 keeps model-selected record ranges but derives local char ranges, text segments, and fenced-code capsules for exact recovery. |
 | [x] | P0 | No multi-round degradation gate | EXP-06 adds deterministic 5/10/20 no-API degradation checks with state, literal, manifest, and token-growth gates. |
 | [x] | P1 | Model schema still has required unanchored arrays | EXP-05 removes provider-side legacy inventories and derives local compatibility arrays from anchored/current state. |
-| [ ] | P1 | No provider-native compaction path | We resend full transcripts and miss OpenAI/xAI/Anthropic opaque compaction state. |
+| [x] | P1 | No provider-native compaction path | EXP-09 adds documented OpenAI/xAI standalone compact probes and Anthropic `compact_20260112` probes. Native output remains opaque and non-authoritative until live calibration. |
 | [x] | P1 | Newest-only user-message selection | Older live safety constraints or preferences can lose to newer low-value chatter. |
-| [ ] | P1 | No artifact retention/security policy | Raw JSONL, SSE, model output, user messages, and rehydrated spans can contain secrets indefinitely. |
-| [ ] | P2 | Renderer format still uses injectable pseudo-XML | `stripped` is good, but sentinel/block delimiters may be smaller and safer. |
+| [x] | P1 | No artifact retention/security policy | EXP-08/09 adds manifest-level artifact policy plus per-artifact retention, exposure, and redaction fields. |
+| [x] | P2 | Renderer format still uses injectable pseudo-XML | EXP-08 adds an opt-in sentinel renderer with delimiter escaping and selective old tool-output compression; `stripped` remains default pending live calibration. |
 | [x] | P2 | Benchmarking is mostly structural counts | EXP-07 adds a deterministic scorecard for state retention, exact literals, unsupported high-risk literals, integrity, and footprint. |
 
 ## Recommended Target Architecture
@@ -303,46 +303,49 @@ Current metrics are necessary but insufficient. Add these gates:
    The receiving prompt should say: user messages preserve intent and correction
    history; live rules come from `rules_and_invariants` and current user input.
 
-## Roadmap
+## Implementation Status
 
 ### Phase 1: Hardening
 
-- Replace XML-ish `## User Messages` ledger with strict JSON in
+- [x] Replace XML-ish `## User Messages` ledger with strict JSON in
   `handoff-state.json`, then render it back into a plain `## User Messages`
   Markdown section for model handoff.
-- Parse carried state only from trusted compact-summary/state records.
-- Add adversarial ledger-injection tests.
-- Anchor or remove unanchored schema arrays.
-- Add artifact manifest with SHA256s and sensitivity labels.
+- [x] Parse carried state only from trusted compact-summary/state records.
+- [x] Add adversarial ledger-injection tests.
+- [x] Anchor or remove unanchored schema arrays.
+- [x] Add artifact manifest with SHA256s and sensitivity labels.
 
 ### Phase 2: Evidence Capsules
 
-- Implement evidence capsules with char offsets and raw slice hashes.
-- Add typed code capsules.
-- Verify rehydration by re-reading raw sources.
-- Make `summary.rehydrated.md` a view over capsules, not a parallel format.
+- [x] Implement evidence capsules with char offsets and raw slice hashes.
+- [x] Add typed code capsules.
+- [x] Verify rehydration by re-reading raw sources.
+- [x] Make `summary.rehydrated.md` a view over capsules, not a parallel format.
 
 ### Phase 3: Recursive State
 
-- Add checkpoint ids and parent checkpoint links.
-- Summarize only new raw segments into previous canonical state.
-- Mark summary-derived evidence as non-authoritative unless backed by raw
+- [x] Add checkpoint ids and parent checkpoint links.
+- [x] Summarize only new raw segments into previous canonical state.
+- [x] Mark summary-derived evidence as non-authoritative unless backed by raw
   capsules.
-- Add 5/10/20-round compaction stress tests.
+- [x] Add 5/10/20-round compaction stress tests.
 
 ### Phase 4: Hybrid Native Backends
 
-- Add Anthropic native compaction backend.
-- Add OpenAI/xAI `/responses/compact` backend.
-- Probe Mantle Responses compact support.
-- Store opaque native compaction items beside local audit state.
+- [x] Add Anthropic native compaction probe.
+- [x] Add OpenAI/xAI `/responses/compact` probes.
+- [ ] Probe Mantle Responses compact support.
+- [x] Store live opaque native compaction items beside local audit state when
+  `--live` is explicitly used; dry-runs record redacted request artifacts.
 
 ### Phase 5: SOTA Evaluation Harness
 
-- Add trajectory-sufficiency judge using next-k actions.
-- Add fact injection/recall tests using LongMemEval-style categories.
-- Add provider reliability/cost latency repeated trials.
-- Add benchmark scorecards that combine retention, false facts, sufficiency,
+- [x] Add advisory semantic judge request/validation scaffold with strict
+  output schema and mechanically checked evidence refs.
+- [ ] Add trajectory-sufficiency judge using next-k actions.
+- [ ] Add fact injection/recall tests using LongMemEval-style categories.
+- [ ] Add provider reliability/cost latency repeated trials.
+- [x] Add benchmark scorecards that combine retention, false facts, sufficiency,
   privacy, and speed.
 
 ## Sources

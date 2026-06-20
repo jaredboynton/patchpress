@@ -32,15 +32,15 @@ function providerDefaults(provider) {
   }
   if (provider === "xai") {
     return {
-      endpoint: (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/responses",
+      endpoint: (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/responses/compact",
       model: process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning",
-      docs: ["https://docs.x.ai/developers/model-capabilities/text/comparison"],
+      docs: ["https://docs.x.ai/developers/advanced-api-usage/context-compaction"],
     };
   }
   return {
-    endpoint: (process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "") + "/responses",
+    endpoint: (process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "") + "/responses/compact",
     model: process.env.OPENAI_COMPACT_MODEL || "gpt-5.5",
-    docs: ["https://developers.openai.com/api/docs/guides/compaction#server-side-compaction"],
+    docs: ["https://developers.openai.com/api/docs/guides/compaction#standalone-compact-endpoint"],
   };
 }
 
@@ -82,7 +82,17 @@ function buildRequest({ provider, transcript, stats }) {
         model: common.model,
         max_tokens: 4096,
         messages: [{ role: "user", content: transcript }],
-        context_management: { edits: [{ type: "compact_20260112" }] },
+        context_management: {
+          edits: [
+            {
+              type: "compact_20260112",
+              trigger: { type: "input_tokens", value: Number(argValue("--trigger-tokens", "50000")) },
+              pause_after_compaction: true,
+              instructions:
+                "Compact the transcript for continuing the task in a later context window. Do not call tools while compacting; return text-only compaction content.",
+            },
+          ],
+        },
       },
     };
   }
@@ -96,9 +106,7 @@ function buildRequest({ provider, transcript, stats }) {
     },
     body: {
       model: common.model,
-      store: false,
       input: [{ role: "user", content: transcript }],
-      context_management: { compact_threshold: 0 },
     },
   };
 }
@@ -106,11 +114,8 @@ function buildRequest({ provider, transcript, stats }) {
 const provider = normalizeProvider(argValue("--provider"));
 const inputPath = resolve(argValue("--input", "transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl"));
 const outDir = resolve(argValue("--out-dir", join("runs", "native-compaction-probe-" + provider)));
-const dryRun = process.argv.includes("--dry-run");
-
-if (!dryRun) {
-  throw new Error("Live native compaction probes are not implemented; rerun with --dry-run");
-}
+const live = process.argv.includes("--live");
+const dryRun = !live;
 
 const transcript = await readFile(inputPath, "utf8");
 const stats = {
@@ -121,24 +126,89 @@ const stats = {
 };
 const request = buildRequest({
   provider,
-  transcript: "<source transcript omitted from redacted dry-run request>",
+  transcript: dryRun ? "<source transcript omitted from redacted dry-run request>" : transcript,
   stats,
 });
 await mkdir(outDir, { recursive: true });
 const requestPath = join(outDir, "native-compaction-request.redacted.json");
-await writeFile(requestPath, JSON.stringify(request, null, 2) + "\n");
+const redactedRequest = JSON.parse(JSON.stringify(request));
+if (!dryRun) {
+  if (provider === "anthropic") {
+    redactedRequest.body.messages[0].content = "<source transcript omitted from request log>";
+  } else {
+    redactedRequest.body.input[0].content = "<source transcript omitted from request log>";
+  }
+}
+await writeFile(requestPath, JSON.stringify(redactedRequest, null, 2) + "\n");
 
-console.log(
-  JSON.stringify(
-    {
-      ok: true,
-      dry_run: true,
-      provider,
-      request_path: requestPath,
-      source_sha256: stats.sha256,
-      records: stats.records,
-    },
-    null,
-    2
-  )
-);
+async function runLiveProbe() {
+  const headers = { ...request.headers };
+  if (provider === "anthropic") {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) throw new Error("ANTHROPIC_API_KEY is required for --live anthropic probe");
+    headers["x-api-key"] = key;
+  } else if (provider === "xai") {
+    const key = process.env.XAI_API_KEY;
+    if (!key) throw new Error("XAI_API_KEY is required for --live xai probe");
+    headers.authorization = "Bearer " + key;
+  } else {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error("OPENAI_API_KEY is required for --live openai probe");
+    headers.authorization = "Bearer " + key;
+  }
+  const startedAt = Date.now();
+  const response = await fetch(request.endpoint, {
+    method: request.method,
+    headers,
+    body: JSON.stringify(request.body),
+  });
+  const responseText = await response.text();
+  let artifact;
+  try {
+    artifact = JSON.parse(responseText);
+  } catch {
+    artifact = { raw_text: responseText };
+  }
+  const artifactPath = join(outDir, "native-compaction-artifact.json");
+  await writeFile(artifactPath, JSON.stringify(artifact, null, 2) + "\n");
+  const result = {
+    ok: response.ok,
+    dry_run: false,
+    provider,
+    status: response.status,
+    elapsed_ms: Date.now() - startedAt,
+    request_path: requestPath,
+    artifact_path: artifactPath,
+    source_sha256: stats.sha256,
+    records: stats.records,
+    opaque_output_policy: request.safety.opaque_output_policy,
+    parse_encrypted_content: false,
+    use_as_authority: false,
+    local_handoff_remains_authority: true,
+    output_count: Array.isArray(artifact.output) ? artifact.output.length : null,
+    usage: artifact.usage || null,
+  };
+  await writeFile(join(outDir, "native-compaction-result.json"), JSON.stringify(result, null, 2) + "\n");
+  console.log(JSON.stringify(result, null, 2));
+  if (!response.ok) process.exit(1);
+}
+
+if (live) {
+  await runLiveProbe();
+} else {
+  const result = {
+    ok: true,
+    dry_run: true,
+    provider,
+    request_path: requestPath,
+    source_sha256: stats.sha256,
+    records: stats.records,
+    opaque_output_policy: request.safety.opaque_output_policy,
+    parse_encrypted_content: false,
+    use_as_authority: false,
+    local_handoff_remains_authority: true,
+  };
+  await writeFile(join(outDir, "native-compaction-result.json"), JSON.stringify(result, null, 2) + "\n");
+
+  console.log(JSON.stringify(result, null, 2));
+}

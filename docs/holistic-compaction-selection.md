@@ -3,7 +3,8 @@
 ## Selected Baseline
 
 Use the EXP-01 + EXP-03 + EXP-04 + EXP-05 + EXP-06 + EXP-07 stack as the
-current holistic baseline:
+current default handoff baseline, with EXP-08/09 enabled as verified opt-in
+tracks:
 
 1. `handoff-state.json` is the canonical typed state.
 2. `handoff-manifest.json` is the artifact/hash/security manifest.
@@ -19,9 +20,21 @@ current holistic baseline:
    survive repeated compactions.
 10. Multi-round degradation and scorecard gates are available before accepting
    future renderer or provider-native experiments.
+11. `handoff-manifest.json` carries artifact retention, exposure, and redaction
+    policy for every generated artifact.
+12. `--transcript-renderer sentinel` is available as an opt-in A/B renderer with
+    delimiter escaping and selective old tool-output compression.
+13. `scripts/probe-native-compaction.mjs` can generate redacted dry-run probes,
+    or explicit `--live` probes, for OpenAI `/responses/compact`, xAI
+    `/v1/responses/compact`, and Anthropic `compact_20260112`.
+14. `scripts/judge-compaction-result.mjs` generates strict advisory semantic
+    judge requests and validates saved judge outputs against candidate hashes
+    and evidence refs.
 
 This is the best current implementation because it closes the highest-risk P0
-handoff/state gaps without increasing the default compact transcript footprint.
+handoff/state gaps without increasing the default compact transcript footprint,
+while keeping the newer token-saving and native-provider work behind explicit
+gates until live provider runs prove retention is no worse than `stripped`.
 
 ## Experiment Comparison
 
@@ -34,6 +47,9 @@ handoff/state gaps without increasing the default compact transcript footprint.
 | EXP-05 provider schema split | Accepted | 21,261 | Removes unanchored legacy arrays from provider schemas and adds provider/local schema fingerprints | Compatibility arrays are derived local sidecar fields. |
 | EXP-06 multi-round degradation gate | Accepted | 23,022 | Adds verified Evidence Index and proves 5/10/20 no-API recompactions preserve state and exact literals | Default-tail footprint rises to preserve exact literals across rounds. |
 | EXP-07 scorecard | Accepted | 23,022 | Scores integrity, state retention, exact literal recovery, unsupported claims, and footprint | Deterministic fixture is not a semantic LLM judge. |
+| EXP-08 sentinel renderer/body compression | Accepted opt-in | 5,427 no-tail replay | Reduces dry-run request body from 601,526 to 468,748 bytes and omits 137,749 chars from old tool output while keeping raw evidence recoverable | Keep `stripped` as default until a live provider run passes the scorecard. |
+| EXP-09 native compaction probes | Accepted probe | n/a | Adds documented OpenAI/xAI standalone compact and Anthropic beta compact probes with opaque-output safety policy | Native output is provider-specific and non-authoritative; live calibration is explicit. |
+| EXP-09 semantic judge scaffold | Accepted advisory | n/a | Adds strict pass/fail/unknown judge schema, candidate hashes, evidence refs, and saved-output validation | Does not override deterministic gates and needs live calibration before CI enforcement. |
 
 ## Verification Evidence
 
@@ -49,6 +65,10 @@ handoff/state gaps without increasing the default compact transcript footprint.
 | Provider schema split | `scripts/test-provider-schema.mjs` verifies minimal provider output without legacy arrays and local derivation of `source_lines_used`. |
 | Multi-round stability | EXP-06 passes rounds 5, 10, and 20 with high-priority intents, objective, next step, exact literals, and manifest hashes preserved. |
 | Scorecard | EXP-07 scores current selected baseline 100/100 and round-20 no-tail state 90/100. |
+| Sentinel renderer | EXP-08 dry-run request body is 468,748 bytes versus 601,526 for stripped; no-API replay scores 100/100 with 50 evidence capsules and 0 bad manifest hashes. |
+| Artifact policy | EXP-08 manifest has policy schema `artifact-retention-policy.v1`; all 13 artifacts include retention, exposure, and redaction fields. |
+| Native probes | EXP-09 dry-runs generated redacted request artifacts for OpenAI `/responses/compact`, xAI `/v1/responses/compact`, and Anthropic `compact_20260112`, all tied to source SHA256 `22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20`. |
+| Semantic judge | EXP-09 generated a `semantic-compaction-judge-request.v1` with 52 evidence refs and validated a saved strict JSON judge output with 4 verdicts and `validation_error: null`. |
 
 ## Current Routing
 
@@ -62,18 +82,24 @@ The selected implementation changes the handoff substrate, not the model-mix
 decision. Provider selection still decides who writes the derived summary; the
 harness owns state, evidence, manifest, and user-intent continuity.
 
-## Not Yet Selected
+## Not Default
 
-The following roadmap items are still open and should be treated as future
-experiments rather than current baseline behavior:
+The following tracks are implemented but not default behavior:
 
-- EXP-08 sentinel renderer/body compression A/B.
-- EXP-09 provider-native compaction probes.
+- EXP-08 sentinel renderer/body compression is opt-in pending live provider
+  retention and token-usage confirmation.
+- EXP-09 provider-native compaction probes are explicit probe artifacts; opaque
+  provider output does not replace local handoff state.
+- EXP-09 semantic judging is advisory until calibrated against labeled good/bad
+  compactions.
 
 ## Decision
 
-Select EXP-01 + EXP-03 + EXP-04 + EXP-05 + EXP-06 + EXP-07 as the current best
-holistic implementation. It improves state safety, user-intent retention,
-evidence recoverability, provider-schema compatibility, repeated-compaction
-stability, and measurable scorecard coverage. The accepted tradeoff is a larger
-model-visible handoff caused by the verified Evidence Index.
+Select EXP-01 + EXP-03 + EXP-04 + EXP-05 + EXP-06 + EXP-07 as the default
+handoff baseline, and accept EXP-08/09 as implemented opt-in/advisory tracks.
+The default improves state safety, user-intent retention, evidence
+recoverability, provider-schema compatibility, repeated-compaction stability,
+and measurable scorecard coverage. The accepted tradeoff is a larger
+model-visible handoff caused by the verified Evidence Index. EXP-08 should
+become the default renderer only after a live current-provider run passes the
+same scorecard at equal or better retention.

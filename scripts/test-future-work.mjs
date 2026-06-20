@@ -161,6 +161,26 @@ try {
     const request = await readJson(join(probeOut, "native-compaction-request.redacted.json"));
     assert(request.provider === provider, provider + " native request provider mismatch");
     assert(request.safety?.opaque_output_policy === "store-only-pass-through", provider + " opaque policy missing");
+    if (provider === "openai") {
+      assert(request.endpoint.endsWith("/responses/compact"), "openai native probe must use standalone compact endpoint");
+    }
+    if (provider === "xai") {
+      assert(request.endpoint.endsWith("/responses/compact"), "xai native probe must use standalone compact endpoint");
+    }
+    if (provider === "anthropic") {
+      assert(
+        request.headers?.["anthropic-beta"] === "compact-2026-01-12",
+        "anthropic native probe beta header missing"
+      );
+      assert(
+        request.body?.context_management?.edits?.[0]?.type === "compact_20260112",
+        "anthropic native probe compaction edit missing"
+      );
+      assert(
+        request.body?.context_management?.edits?.[0]?.pause_after_compaction === true,
+        "anthropic native probe pause_after_compaction missing"
+      );
+    }
   }
 
   const judgeOut = join(tmp, "judge");

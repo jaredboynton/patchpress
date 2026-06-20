@@ -72,11 +72,15 @@ policy, and semantic judging.
   Current dry-run evidence: `stripped` request body `601,526` bytes versus
   `sentinel` request body `468,748` bytes, with `11` old tool-output records
   compressed and `137,749` chars omitted from the model-visible prompt.
-- [ ] Run native provider probes when credentials and desired provider/model are
-  selected.
-- [ ] Run semantic judge live or with a saved judge output after deterministic
-  scorecard pass.
-- [ ] Update final selection docs after benchmark evidence exists.
+- [x] Run native provider probe dry-runs for the three documented native paths:
+  OpenAI `/responses/compact`, xAI `/v1/responses/compact`, and Anthropic
+  `compact_20260112`. Live native calls remain explicit `--live` probes because
+  native output is opaque and not authoritative.
+- [x] Run semantic judge dry-run plus saved-output validation after
+  deterministic scorecard pass. The saved output validates strict schema,
+  candidate hashes, and evidence-reference mechanics; it is not a live semantic
+  quality claim.
+- [x] Update final selection docs after benchmark/probe evidence exists.
 
 ## Implementation Checklist
 
@@ -112,4 +116,28 @@ policy, and semantic judging.
   and redaction fields; manifest policy schema is
   `artifact-retention-policy.v1`.
 - Native probe artifacts:
+  - OpenAI: `runs/exp09-native-probes-noapi/openai/native-compaction-request.redacted.json`
+    uses `https://api.openai.com/v1/responses/compact`, model `gpt-5.5`, source
+    SHA256 `22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20`,
+    and `1,066` source records.
+  - xAI: `runs/exp09-native-probes-noapi/xai/native-compaction-request.redacted.json`
+    uses `https://api.x.ai/v1/responses/compact`, model
+    `grok-4.20-0309-non-reasoning`, the same source SHA256, and `1,066` source
+    records.
+  - Anthropic: `runs/exp09-native-probes-noapi/anthropic/native-compaction-request.redacted.json`
+    uses `https://api.anthropic.com/v1/messages`,
+    `anthropic-beta: compact-2026-01-12`, `compact_20260112`,
+    `pause_after_compaction: true`, `trigger.value: 50000`, and no-tool
+    compaction instructions.
+  - All native probe results set `opaque_output_policy:
+    store-only-pass-through`, `parse_encrypted_content: false`,
+    `use_as_authority: false`, and `local_handoff_remains_authority: true`.
 - Semantic judge artifacts:
+  - `runs/exp09-semantic-judge-noapi/semantic-judge-request.json` generated a
+    `semantic-compaction-judge-request.v1` request with `52` evidence refs,
+    deterministic metrics from `runs/exp08-sentinel-noapi`, and
+    `gates_remain_deterministic: true`.
+  - `runs/exp09-semantic-judge-validated-noapi/semantic-judge-result.json`
+    validated a saved strict JSON judge output with `4` verdicts,
+    `validation_error: null`, candidate hashes, and mechanically checked
+    evidence refs.
