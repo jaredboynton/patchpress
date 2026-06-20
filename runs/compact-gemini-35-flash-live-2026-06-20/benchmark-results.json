@@ -1,0 +1,65 @@
+{
+  "run_dir": "runs/compact-gemini-35-flash-live-2026-06-20",
+  "provider": "gemini",
+  "model": "gemini-3.5-flash",
+  "thinking_level": "low",
+  "source": {
+    "transcript_bytes": 2379590,
+    "transcript_records": 1066,
+    "transcript_sha256": "22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20",
+    "estimated_tokens": 593956
+  },
+  "compaction_ratio": {
+    "summary": {
+      "estimated_tokens": 803,
+      "ratio_original_to_output": 739.67,
+      "reduction_percent": 99.86
+    },
+    "timeline": {
+      "estimated_tokens": 2122,
+      "ratio_original_to_output": 279.9,
+      "reduction_percent": 99.64
+    },
+    "rehydrated": {
+      "estimated_tokens": 22805,
+      "ratio_original_to_output": 26.04,
+      "reduction_percent": 96.16
+    },
+    "after_compact_jsonl": {
+      "estimated_tokens": 18789,
+      "ratio_original_to_output": 31.61,
+      "reduction_percent": 96.84
+    }
+  },
+  "fact_retention": {
+    "method": "deterministic structural retention checks, not semantic recall scoring",
+    "checks": {
+      "integrity_echo_matches": true,
+      "user_message_count": 8,
+      "user_message_collapsed_count": 1,
+      "summary_block_count": 4,
+      "rules_and_invariants_count": 4,
+      "current_rules_and_invariants_count": 4,
+      "plans_and_task_state_count": 2,
+      "rehydrated_span_count": 15,
+      "source_line_count": 17,
+      "legacy_model_user_messages_discarded": 0
+    }
+  },
+  "speed": {
+    "wall_seconds": 124.41,
+    "prompt_tokens": 1016973,
+    "output_tokens": 3275,
+    "thoughts_tokens": 7736,
+    "total_tokens": 1027984,
+    "output_tokens_per_second": 26.32,
+    "total_tokens_per_second": 8263.07
+  },
+  "artifacts": {
+    "summary_md": "runs/compact-gemini-35-flash-live-2026-06-20/summary.md",
+    "timeline_md": "runs/compact-gemini-35-flash-live-2026-06-20/summary.timeline.md",
+    "rehydrated_md": "runs/compact-gemini-35-flash-live-2026-06-20/summary.rehydrated.md",
+    "user_messages_json": "runs/compact-gemini-35-flash-live-2026-06-20/user-messages.json",
+    "result_json": "runs/compact-gemini-35-flash-live-2026-06-20/result.json"
+  }
+}

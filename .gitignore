@@ -1,0 +1,41 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Dependencies and package-manager caches
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+
+# Build/cache/temp output
+dist/
+build/
+coverage/
+.cache/
+.tmp/
+tmp/
+temp/
+*.log
+
+# Full input transcripts are large local fixtures. Keep manifests/docs tracked.
+transcripts/*.jsonl
+!transcripts/manifest.tsv
+
+# Compaction runs are generated artifacts. Keep only published benchmark reports.
+runs/**
+!runs/
+!runs/compact-user-messages-live-2026-06-20/
+!runs/compact-user-messages-live-2026-06-20/benchmark-results.json
+!runs/compact-user-messages-live-2026-06-20/benchmark-results.md
+!runs/compact-gemini-35-flash-live-2026-06-20/
+!runs/compact-gemini-35-flash-live-2026-06-20/benchmark-results.json
+!runs/compact-gemini-35-flash-live-2026-06-20/benchmark-results.md

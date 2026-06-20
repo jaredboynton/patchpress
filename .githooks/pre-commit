@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+doc_path="docs/shared-compaction-prompt.md"
+tmp_path="$(mktemp "${TMPDIR:-/tmp}/shared-compaction-prompt.XXXXXX")"
+trap 'rm -f "$tmp_path"' EXIT
+
+node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown > "$tmp_path"
+
+if ! diff -u "$doc_path" "$tmp_path" >/dev/null; then
+  echo "shared compaction prompt doc is out of sync with scripts/compact-full-transcript.mjs" >&2
+  echo "Run this and commit the result:" >&2
+  echo "  node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown > $doc_path" >&2
+  echo "" >&2
+  diff -u "$doc_path" "$tmp_path" >&2 || true
+  exit 1
+fi

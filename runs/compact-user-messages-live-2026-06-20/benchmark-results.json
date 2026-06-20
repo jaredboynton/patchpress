@@ -1,0 +1,66 @@
+{
+  "run_dir": "runs/compact-user-messages-live-2026-06-20",
+  "model": "gpt-5.4",
+  "service_tier": "priority",
+  "reasoning_effort": "low",
+  "source": {
+    "transcript_bytes": 2379590,
+    "transcript_records": 1066,
+    "transcript_sha256": "22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20",
+    "estimated_tokens": 593956
+  },
+  "compaction_ratio": {
+    "summary": {
+      "estimated_tokens": 2168,
+      "ratio_original_to_output": 273.96,
+      "reduction_percent": 99.63
+    },
+    "timeline": {
+      "estimated_tokens": 3638,
+      "ratio_original_to_output": 163.26,
+      "reduction_percent": 99.39
+    },
+    "rehydrated": {
+      "estimated_tokens": 41261,
+      "ratio_original_to_output": 14.4,
+      "reduction_percent": 93.05
+    },
+    "after_compact_jsonl": {
+      "estimated_tokens": 20252,
+      "ratio_original_to_output": 29.33,
+      "reduction_percent": 96.59
+    }
+  },
+  "fact_retention": {
+    "method": "deterministic structural retention checks, not semantic recall scoring",
+    "checks": {
+      "integrity_echo_matches": true,
+      "user_message_hashes_match": true,
+      "user_message_full_text_recoverable": true,
+      "user_message_count": 8,
+      "user_message_collapsed_count": 1,
+      "summary_block_count": 5,
+      "rules_and_invariants_count": 6,
+      "current_rules_and_invariants_count": 5,
+      "plans_and_task_state_count": 10,
+      "rehydrated_span_count": 59,
+      "source_line_count": 69,
+      "legacy_model_user_messages_discarded": 0
+    }
+  },
+  "speed": {
+    "wall_seconds": 145.95,
+    "output_tokens": 5231,
+    "input_tokens": 890616,
+    "total_tokens": 895847,
+    "output_tokens_per_second": 35.84,
+    "total_tokens_per_second": 6138.04
+  },
+  "artifacts": {
+    "summary_md": "runs/compact-user-messages-live-2026-06-20/summary.md",
+    "timeline_md": "runs/compact-user-messages-live-2026-06-20/summary.timeline.md",
+    "rehydrated_md": "runs/compact-user-messages-live-2026-06-20/summary.rehydrated.md",
+    "user_messages_json": "runs/compact-user-messages-live-2026-06-20/user-messages.json",
+    "result_json": "runs/compact-user-messages-live-2026-06-20/result.json"
+  }
+}
