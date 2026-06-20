@@ -47,7 +47,7 @@ handoff protocols.
 | [ ] | P0 | No multi-round degradation gate | A single successful compaction can still decay badly by round 5 or 20. |
 | [ ] | P1 | Model schema still has required unanchored arrays | `primary_request_and_intent`, `problem_solving`, etc. invite ungrounded filler. |
 | [ ] | P1 | No provider-native compaction path | We resend full transcripts and miss OpenAI/xAI/Anthropic opaque compaction state. |
-| [ ] | P1 | Newest-only user-message selection | Older live safety constraints or preferences can lose to newer low-value chatter. |
+| [x] | P1 | Newest-only user-message selection | Older live safety constraints or preferences can lose to newer low-value chatter. |
 | [ ] | P1 | No artifact retention/security policy | Raw JSONL, SSE, model output, user messages, and rehydrated spans can contain secrets indefinitely. |
 | [ ] | P2 | Renderer format still uses injectable pseudo-XML | `stripped` is good, but sentinel/block delimiters may be smaller and safer. |
 | [ ] | P2 | Benchmarking is mostly structural counts | Counts do not prove downstream sufficiency or absence of false facts. |

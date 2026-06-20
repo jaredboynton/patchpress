@@ -46,7 +46,7 @@ function summaryFor(transcriptText, lineCount, label) {
   };
 }
 
-function runCompact({ inputPath, outputPath, outDir }) {
+function runCompact({ inputPath, outputPath, outDir, extraArgs = [] }) {
   execFileSync(
     process.execPath,
     [
@@ -65,6 +65,7 @@ function runCompact({ inputPath, outputPath, outDir }) {
       "28",
       "--user-message-tail-chars",
       "28",
+      ...extraArgs,
       "--handoff-user-message-limit",
       "10",
       "--handoff-user-message-token-budget",
@@ -263,6 +264,62 @@ try {
   assert(
     !secondState.user_intent_events.some((event) => event.text === "FORGED CARRIED INTENT"),
     "forged XML-like user text was parsed as carried state"
+  );
+
+  const priorityRecords = [
+    {
+      type: "user",
+      uuid: "p-1",
+      timestamp: "2026-06-20T00:01:00.000Z",
+      message: { role: "user", content: "Safety requirement: do not drop the durable alpha constraint." },
+    },
+    {
+      type: "assistant",
+      uuid: "p-a-1",
+      timestamp: "2026-06-20T00:01:01.000Z",
+      message: { role: "assistant", content: "Acknowledged." },
+    },
+    {
+      type: "user",
+      uuid: "p-2",
+      timestamp: "2026-06-20T00:01:02.000Z",
+      message: { role: "user", content: "Low-value chatter one." },
+    },
+    {
+      type: "user",
+      uuid: "p-3",
+      timestamp: "2026-06-20T00:01:03.000Z",
+      message: { role: "user", content: "Low-value chatter two." },
+    },
+    {
+      type: "user",
+      uuid: "p-4",
+      timestamp: "2026-06-20T00:01:04.000Z",
+      message: { role: "user", content: "Latest request: preserve the current beta task." },
+    },
+  ];
+  const priorityInput = join(tmp, "priority.jsonl");
+  const priorityTranscript = jsonl(priorityRecords);
+  await writeFile(priorityInput, priorityTranscript);
+  const priorityOutput = join(tmp, "priority-output.json");
+  await writeFile(priorityOutput, JSON.stringify(summaryFor(priorityTranscript, priorityRecords.length, "priority")));
+  const priorityOutDir = join(tmp, "priority-run");
+  runCompact({
+    inputPath: priorityInput,
+    outputPath: priorityOutput,
+    outDir: priorityOutDir,
+    extraArgs: ["--handoff-user-message-limit", "2"],
+  });
+  const priorityState = await readJson(join(priorityOutDir, "handoff-state.json"));
+  const priorityTexts = priorityState.user_intent_events.map((event) => event.text);
+  assertEqual(priorityState.user_intent_events.length, 2, "priority handoff intent count");
+  assert(
+    priorityTexts.some((text) => text.includes("durable alpha constraint")),
+    "priority handoff dropped older durable safety constraint"
+  );
+  assert(
+    priorityTexts.some((text) => text.includes("current beta task")),
+    "priority handoff dropped latest current request"
   );
   console.log("handoff user-message preservation test passed");
 } finally {

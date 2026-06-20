@@ -1820,48 +1820,88 @@ function renderHandoffUserMessage(message) {
   return "<user-message " + attrText + ">\n" + handoffUserMessageBody(message) + "\n</user-message>";
 }
 
+function handoffUserMessagePriority(message, index, total) {
+  const text = message.text || "";
+  const kind = inferUserIntentKind(text);
+  const priority = inferUserIntentPriority(kind, text);
+  const priorityRank = {
+    must_keep: 0,
+    high: 1,
+    normal: 2,
+    low: 3,
+  }[priority] ?? 2;
+  return {
+    kind,
+    priority,
+    rank: priorityRank,
+    recency: total - index,
+  };
+}
+
 function selectHandoffUserMessages(messages) {
   const selected = [];
   let tokenEstimate = 0;
   let lineCount = 0;
-  let omittedOlder = 0;
   const maxMessages = handoffUserMessageLimit;
   const maxTokens = handoffUserMessageTokenBudget;
   const maxLines = handoffUserMessageLineLimit;
+  const candidates = messages
+    .map((message, index) => ({
+      message,
+      index,
+      priority: handoffUserMessagePriority(message, index, messages.length),
+    }))
+    .sort((a, b) => a.priority.rank - b.priority.rank || b.index - a.index);
 
-  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
-    if (maxMessages === 0) {
-      omittedOlder = idx + 1;
-      break;
-    }
+  if (maxMessages === 0) {
+    return {
+      selected: [],
+      total: messages.length,
+      omitted_older: messages.length,
+      omitted_total: messages.length,
+      token_estimate: 0,
+      line_count: 0,
+      limits: {
+        count: maxMessages,
+        token_budget: maxTokens,
+        line_limit: maxLines,
+      },
+    };
+  }
+
+  for (const candidate of candidates) {
     if (selected.length >= maxMessages) {
-      omittedOlder = idx + 1;
       break;
     }
-    const rendered = renderHandoffUserMessage(messages[idx]);
+    const rendered = renderHandoffUserMessage(candidate.message);
     const renderedTokens = Math.ceil(rendered.length / 4);
     const renderedLines = rendered.split(/\r?\n/).length;
     const wouldExceedTokens = maxTokens > 0 && tokenEstimate + renderedTokens > maxTokens;
     const wouldExceedLines = maxLines > 0 && lineCount + renderedLines > maxLines;
     if (selected.length > 0 && (wouldExceedTokens || wouldExceedLines)) {
-      omittedOlder = idx + 1;
-      break;
+      continue;
     }
     selected.push({
-      ...messages[idx],
+      ...candidate.message,
+      selection_priority: candidate.priority.priority,
+      selection_kind: candidate.priority.kind,
+      selection_rank: candidate.priority.rank,
       rendered,
       rendered_tokens: renderedTokens,
       rendered_lines: renderedLines,
+      original_index: candidate.index,
     });
     tokenEstimate += renderedTokens;
     lineCount += renderedLines;
   }
 
-  selected.reverse();
+  selected.sort((a, b) => a.original_index - b.original_index);
+  const omittedTotal = Math.max(messages.length - selected.length, 0);
   return {
     selected,
     total: messages.length,
-    omitted_older: omittedOlder,
+    omitted_older: omittedTotal,
+    omitted_total: omittedTotal,
     token_estimate: tokenEstimate,
     line_count: lineCount,
     limits: {
