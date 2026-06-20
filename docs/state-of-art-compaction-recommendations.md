@@ -32,7 +32,8 @@ handoff protocols.
 - `summary_blocks`, `rules_and_invariants`, `plans_and_task_state`, and
   `promises_made` all have `source_spans`.
 - `summary.rehydrated.md` and `rehydrated-spans.json` recover exact local
-  evidence rather than trusting model prose.
+  evidence rather than trusting model prose, with char-aware text segments and
+  fenced-code capsules in the accepted EXP-04 path.
 - `## User Messages` now preserves user-authored prompts deterministically and
   carries them across future compactions.
 - Model output is validated locally after strict schema parsing.
@@ -43,7 +44,7 @@ handoff protocols.
 |---|---|---|---|
 | [x] | P0 | `## User Messages` is XML-ish text, not strict JSON | User content can inject `</user-message>` or forged ledgers; parsing from arbitrary records is unsafe. |
 | [x] | P0 | No canonical `handoff-state.json` / manifest | The actual handoff is still markdown embedded in JSONL; sidecars are not a typed state contract. |
-| [ ] | P0 | Source spans are record ranges only | Good for transcript records, weak for exact code/literal boundaries inside long messages. |
+| [x] | P0 | Source spans are record ranges only | EXP-04 keeps model-selected record ranges but derives local char ranges, text segments, and fenced-code capsules for exact recovery. |
 | [ ] | P0 | No multi-round degradation gate | A single successful compaction can still decay badly by round 5 or 20. |
 | [ ] | P1 | Model schema still has required unanchored arrays | `primary_request_and_intent`, `problem_solving`, etc. invite ungrounded filler. |
 | [ ] | P1 | No provider-native compaction path | We resend full transcripts and miss OpenAI/xAI/Anthropic opaque compaction state. |
