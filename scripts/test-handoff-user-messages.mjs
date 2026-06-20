@@ -435,10 +435,16 @@ try {
   runCompact({ inputPath: derivedInput, outputPath: derivedOutput, outDir: derivedOutDir });
   const derivedState = await readJson(join(derivedOutDir, "handoff-state.json"));
   const derivedSummary = await readJson(join(derivedOutDir, "summary.json"));
-  assert(Array.isArray(derivedState.primary_request_and_intent), "derived handoff primary intent missing");
-  assertEqual(derivedState.primary_request_and_intent.length, 0, "derived handoff primary intent default");
-  assert(Array.isArray(derivedState.pending_tasks), "derived handoff pending tasks missing");
-  assertEqual(derivedState.pending_tasks.length, 0, "derived handoff pending task default");
+  assert(
+    derivedState.primary_request_and_intent.some((item) =>
+      item.includes("Testing deterministic handoff user-message preservation")
+    ),
+    "derived handoff primary intent missing"
+  );
+  assert(
+    derivedState.pending_tasks.some((item) => item.includes("Run the second compaction")),
+    "derived handoff pending task missing"
+  );
   assert(
     Array.isArray(derivedSummary.source_lines_used) && derivedSummary.source_lines_used.includes(1),
     "derived summary source lines missing"

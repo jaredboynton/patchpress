@@ -2,7 +2,8 @@
 
 ## Selected Baseline
 
-Use the EXP-01 + EXP-03 + EXP-04 stack as the current holistic baseline:
+Use the EXP-01 + EXP-03 + EXP-04 + EXP-05 stack as the current holistic
+baseline:
 
 1. `handoff-state.json` is the canonical typed state.
 2. `handoff-manifest.json` is the artifact/hash/security manifest.
@@ -12,6 +13,8 @@ Use the EXP-01 + EXP-03 + EXP-04 stack as the current holistic baseline:
 6. User-message retention is priority-aware, not newest-only.
 7. Evidence capsules are emitted as verified sidecar metadata with char ranges,
    per-record text segments, and fenced-code code capsules.
+8. Provider-submitted schemas are separate from local validation; compatibility
+   arrays are derived locally from anchored state.
 
 This is the best current implementation because it closes the highest-risk P0
 handoff/state gaps without increasing the default compact transcript footprint.
@@ -24,6 +27,7 @@ handoff/state gaps without increasing the default compact transcript footprint.
 | EXP-01 typed handoff state | Accepted | 21,307 | Adds typed state, manifest, rendered Markdown handoff, trusted carried-state parsing, sidecar evidence capsule metadata | Requires sidecar availability for full typed carry-forward. |
 | EXP-03 priority-aware retention | Accepted | 21,281 | Keeps older durable constraints ahead of newer low-value chatter under tight limits | Uses heuristic intent classification until a richer user-intent model exists. |
 | EXP-04 char-aware evidence capsules | Accepted | 21,278 | Adds per-span char ranges, 1,850 text segments, 23 fenced-code capsules, and structured tool evidence extraction | Char ranges are relative to extracted text, not raw byte offsets. |
+| EXP-05 provider schema split | Accepted | 21,261 | Removes unanchored legacy arrays from provider schemas and adds provider/local schema fingerprints | Compatibility arrays are derived local sidecar fields. |
 
 ## Verification Evidence
 
@@ -34,8 +38,9 @@ handoff/state gaps without increasing the default compact transcript footprint.
 | Manifest hashes | EXP-01 report verified all 13 manifest artifacts, 0 bad hashes. |
 | User intent events | EXP-03 output has 8 events: 2 high-priority constraints and 6 normal requests. |
 | Injection resistance | `scripts/test-handoff-user-messages.mjs` includes forged XML-like ledger text and verifies it is not parsed as carried state. |
-| Token footprint | EXP-04 default-tail result is 21,278 estimated tokens versus baseline 21,322. |
+| Token footprint | EXP-05 default-tail result is 21,261 estimated tokens versus baseline 21,322. |
 | Evidence grounding | Current replay preserves 50 evidence capsules, 1,850 text segments, 23 code capsules, and 41 cited source lines. |
+| Provider schema split | `scripts/test-provider-schema.mjs` verifies minimal provider output without legacy arrays and local derivation of `source_lines_used`. |
 
 ## Current Routing
 
@@ -54,7 +59,6 @@ harness owns state, evidence, manifest, and user-intent continuity.
 The following roadmap items are still open and should be treated as future
 experiments rather than current baseline behavior:
 
-- EXP-05 provider schema/local validation split.
 - EXP-06 multi-round degradation harness.
 - EXP-07 sufficiency/fact scorecard.
 - EXP-08 sentinel renderer/body compression A/B.
@@ -62,6 +66,7 @@ experiments rather than current baseline behavior:
 
 ## Decision
 
-Select EXP-01 + EXP-03 + EXP-04 as the current best holistic implementation. It
-is the only tested stack that improves state safety, user-intent retention, and
-evidence recoverability while holding the compact transcript footprint flat.
+Select EXP-01 + EXP-03 + EXP-04 + EXP-05 as the current best holistic
+implementation. It improves state safety, user-intent retention, evidence
+recoverability, and provider-schema compatibility while holding the compact
+transcript footprint flat.
