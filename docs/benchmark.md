@@ -5,17 +5,19 @@ Older benchmark tables are historical unless their numbers are repeated here.
 
 ## Current Decision
 
-Use Gemini for validated live routing until the xAI/Codex empty-span
-rehydration issue is fixed and rerun.
+Use Gemini as the default validated live route. Bedrock Mantle Grok 4.3 is now
+a validated Sentinel alternate with lower reported provider input tokens than
+the Gemini Sentinel lanes. xAI direct and Codex remain unrouted until the
+empty-span rehydration issue is fixed and rerun.
 
 | Lane | Provider | Model | Renderer | Routing Status |
 |---|---|---|---|---|
 | Default quality | Gemini | `gemini-3.5-flash` | Sentinel | Current best speed/quality pass. |
 | Fast | Gemini | `gemini-3.1-flash-lite` | Sentinel | Current fastest validated pass. |
+| Bedrock alternate | Bedrock Mantle | `xai.grok-4.3` | Sentinel | Validated pass; lower reported input tokens than Gemini Sentinel. |
 | Stable fallback | Gemini | `gemini-3.5-flash` | stripped | Use when avoiding Sentinel-specific behavior. |
 | xAI candidate | xAI | `grok-4.20-0309-non-reasoning` | Sentinel or stripped | Do not route yet; latest run failed local validation. |
 | Codex candidate | Codex | `gpt-5.4` | Sentinel or stripped | Do not route yet; latest run failed local validation. |
-| Mantle candidate | Bedrock Mantle | `xai.grok-4.3` | Sentinel | Not rerun; local key unavailable. |
 
 ## Benchmark Conditions
 
@@ -43,6 +45,7 @@ providers report chat-completions `prompt_tokens` with different accounting.
 |---|---|---|---|---:|---:|---:|---:|---:|---|---:|---|
 | Default quality | `gemini-3.5-flash` | Sentinel | pass | 19.70s | 175,193 | 2,526 | 1,092 | 4,513 | 4 rules, 4 plan items, 2 promises, 36 capsules, 34 cited lines | 90/100 | pass |
 | Fast | `gemini-3.1-flash-lite` | Sentinel | pass | 3.74s | 175,193 | 1,001 | 416 | 3,512 | 2 rules, 2 plan items, 1 promise, 13 capsules, 12 cited lines | 90/100 | pass |
+| Bedrock alternate | `xai.grok-4.3` | Sentinel | pass | 9.20s | 138,556 | 812 | 513 | 3,805 | 2 rules, 2 plan items, 1 promise, 9 capsules, 9 cited lines | 90/100 | pass |
 | Stable fallback | `gemini-3.5-flash` | stripped | pass | 20.45s | 200,836 | 1,761 | 758 | 3,917 | 3 rules, 4 plan items, 1 promise, 46 capsules, 38 cited lines | 90/100 | pass |
 | Fast stripped | `gemini-3.1-flash-lite` | stripped | pass | 3.53s | 200,836 | 880 | 328 | 4,134 | 2 rules, 2 plan items, 0 promises, 7 capsules, 10 cited lines | 90/100 | pass |
 
@@ -54,7 +57,6 @@ providers report chat-completions `prompt_tokens` with different accounting.
 | xAI direct | `grok-4.20-0309-non-reasoning` | stripped | local validation failed after 13.51s | Structured output cited spans that rehydrated to empty evidence-capsule text segments. |
 | Codex | `gpt-5.4`, low reasoning, priority | Sentinel | local validation failed after 38.58s | Structured output cited metadata-only or otherwise non-text spans that rehydrated empty. |
 | Codex | `gpt-5.4`, low reasoning, priority | stripped | local validation failed after 30.00s+ | Structured output cited metadata-only or otherwise non-text spans that rehydrated empty. |
-| Bedrock Mantle | `xai.grok-4.3` | Sentinel | not run | Missing `MANTLE_API_KEY` / `BEDROCK_MANTLE_API_KEY` in this environment. |
 
 Structured outputs worked at the JSON Schema layer for the failed xAI/Codex
 runs. The failure happened later in the local grounding contract: the cited line
@@ -66,6 +68,7 @@ ranges did not produce non-empty `text_segments` during local rehydration.
 |---|---|
 | Gemini 3.5 Flash Sentinel | `runs/rerun-sentinel-gemini-35-flash-2026-06-20/result.json` |
 | Gemini Flash-Lite Sentinel | `runs/rerun-sentinel-gemini-31-flash-lite-medium-2026-06-20/result.json` |
+| Bedrock Mantle Grok 4.3 Sentinel | `runs/rerun-sentinel-mantle-grok-43-2026-06-20/result.json` |
 | Gemini 3.5 Flash stripped | `runs/rerun-current-stripped-gemini-35-flash-2026-06-20/result.json` |
 | Gemini Flash-Lite stripped | `runs/rerun-current-stripped-gemini-31-flash-lite-medium-2026-06-20/result.json` |
 | xAI Sentinel failed output | `runs/rerun-sentinel-xai-grok-420-nonreasoning-2026-06-20/model-output.json` |
@@ -74,6 +77,7 @@ ranges did not produce non-empty `text_segments` during local rehydration.
 | Codex stripped failed output | `runs/rerun-current-stripped-codex-gpt-54-low-2026-06-20/model-output.json` |
 | Gemini 3.5 Flash Sentinel judge | `runs/semantic-judge-rerun-sentinel-gemini-35-flash-2026-06-20/semantic-judge-result.json` |
 | Gemini Flash-Lite Sentinel judge | `runs/semantic-judge-rerun-sentinel-gemini-31-flash-lite-medium-2026-06-20/semantic-judge-result.json` |
+| Bedrock Mantle Grok 4.3 Sentinel judge | `runs/semantic-judge-rerun-sentinel-mantle-grok-43-2026-06-20/semantic-judge-result.json` |
 | Gemini 3.5 Flash stripped judge | `runs/semantic-judge-rerun-current-stripped-gemini-35-flash-2026-06-20/semantic-judge-result.json` |
 | Gemini Flash-Lite stripped judge | `runs/semantic-judge-rerun-current-stripped-gemini-31-flash-lite-medium-2026-06-20/semantic-judge-result.json` |
 
@@ -81,9 +85,9 @@ ranges did not produce non-empty `text_segments` during local rehydration.
 
 1. Use `gemini-3.5-flash` with Sentinel as the default quality lane.
 2. Use `gemini-3.1-flash-lite` with Sentinel as the fast lane.
-3. Use `gemini-3.5-flash` with stripped renderer when Sentinel behavior is under investigation.
-4. Do not route xAI or Codex until empty-span rehydration is repaired and a fresh rerun passes local validation, scorecard, and semantic judge.
-5. Rerun Mantle after credentials are available.
+3. Use Bedrock Mantle `xai.grok-4.3` with Sentinel as the validated Bedrock alternate.
+4. Use `gemini-3.5-flash` with stripped renderer when Sentinel behavior is under investigation.
+5. Do not route xAI direct or Codex until empty-span rehydration is repaired and a fresh rerun passes local validation, scorecard, and semantic judge.
 
 ## Historical Benchmark Docs
 
