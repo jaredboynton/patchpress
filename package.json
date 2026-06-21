@@ -1,0 +1,8 @@
+{
+  "name": "claudecompact-patcher",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "js-tiktoken": "^1.0.21"
+  }
+}

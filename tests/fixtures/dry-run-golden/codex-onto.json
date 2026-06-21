@@ -4,7 +4,7 @@
   "request": {
     "provider": "codex",
     "endpoint": "https://chatgpt.com/backend-api/codex/responses",
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "provider_schema_fingerprint": "9b53534c90a1798b26cb08734a86d17bc51ccd7f1434ffc6fecd010405f701d6",
     "local_validation_schema": "summary-local-validation.v1",
     "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
@@ -21,7 +21,7 @@
     "transcript_records": 16,
     "transcript_renderer": "onto",
     "estimated_char_div_4_tokens": 32188,
-    "request_body_bytes": 133798,
+    "request_body_bytes": 133820,
     "wrapped_transcript_bytes": 120348,
     "wrapped_transcript_estimated_tokens": 30084,
     "live_output": true,
@@ -63,7 +63,7 @@
     "x-codex-window-id":"<v>"
   },
   "body": {
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "instructions": "You are a transcript compaction engine. Output only strict JSON matching the requested schema.",
     "input": [
       {

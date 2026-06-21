@@ -43,10 +43,13 @@ showMatches("design + exit-proof sections", /validate-and-reask|Density gate|Cor
 const src = readFileSync(harness, "utf8");
 console.log("1. SOURCE (scripts/compact-full-transcript.mjs):");
 check("reask loop present (up to N attempts)", /for \(let reaskAttempt = 0;/.test(src) && /reaskAttempt >= MAX_REASKS/.test(src));
+check("--reask-until-pass flag", /REASK_UNTIL_PASS/.test(src) && /--reask-until-pass/.test(src));
+check("until-pass exits when density still short", /REASK_UNTIL_PASS && MAX_REASKS > 0 && !reaskBest\.density\.pass/.test(src));
 check("density gate called per attempt", /evaluateHandoffDensity\(summary, DENSITY_THRESHOLDS\)/.test(src));
 check("best attempt retained", /reaskBest = \{ summary, outputText, events, density: reaskDensity \}/.test(src));
 check("corrective feedback re-sent", /reaskFeedback = reaskDensity\.feedback/.test(src) && /reaskFeedback,/.test(src));
-check("Bedrock-safe short-circuit (no schema change)", /loadedFromOutput \|\| MAX_REASKS === 0/.test(src));
+check("Bedrock-safe short-circuit (no schema change)", /loadedFromOutput \|\| \(MAX_REASKS === 0 && !REASK_UNTIL_PASS\)/.test(src));
+check("adapt-prompt auto-enabled with until-pass for non-codex", /REASK_UNTIL_PASS && !_promptTraits\.isStrong/.test(src));
 
 // 2. BEHAVIOR evidence (real run summaries).
 console.log("2. BEHAVIOR (density gate on real summaries):");

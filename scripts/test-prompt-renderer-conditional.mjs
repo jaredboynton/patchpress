@@ -21,7 +21,7 @@ console.log("1. Renderer-conditional evidence block:");
 check("prompt splices rendererEvidenceInstructions(stats.transcriptRenderer)",
   src.includes("rendererEvidenceInstructions(stats.transcriptRenderer)"));
 check("sentinel variant present", /sentinel records beginning with @@RECORD/.test(src));
-check("onto variant present", /ONTO columnar framing/.test(src));
+check("onto variant present", /schema-once row-major framing/.test(src));
 check("stripped variant present", /wrapped as <record line=/.test(src));
 
 console.log("2. No few-shot example in the prompt:");

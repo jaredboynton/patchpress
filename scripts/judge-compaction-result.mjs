@@ -15,7 +15,17 @@ const CODEX_INSTALLATION_ID_PATH =
 const CODEX_ORIGINATOR = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || "codex_cli_rs";
 const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || resolveCodexClientVersion();
 const CODEX_USER_AGENT = process.env.CODEX_USER_AGENT || buildCodexUserAgent();
-const JUDGE_MODEL = argValue("--model", process.env.CODEX_JUDGE_MODEL || "gpt-5.5");
+const JUDGE_PROVIDER = String(
+  argValue("--provider", process.env.CODEX_JUDGE_PROVIDER || "codex"),
+).toLowerCase();
+const GEMINI_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "";
+const GEMINI_API_BASE_URL = (
+  process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta"
+).replace(/\/$/, "");
+const JUDGE_MODEL = argValue(
+  "--model",
+  process.env.CODEX_JUDGE_MODEL || (JUDGE_PROVIDER === "gemini" ? "gemini-3.5-flash" : "gpt-5.5"),
+);
 const JUDGE_REASONING_EFFORT = argValue(
   "--reasoning-effort",
   process.env.CODEX_JUDGE_REASONING_EFFORT || "medium",
@@ -716,18 +726,210 @@ async function callCodexJudge(request, outDir) {
   return result;
 }
 
+// --- Gemini judge path (cross-family verdict) --------------------------------
+// Mirrors callCodexJudge against the Gemini generateContent SSE API so the same
+// provider-agnostic judge request (buildJudgeRequest) can be scored by a model
+// from a different family, offsetting the same-family bias of a Codex judge on a
+// Codex-produced handoff. buildJudgeRequest, validateJudgeOutput, and
+// calculatedJudgeOutcome are shared unchanged.
+
+function geminiJudgeThinkingConfig(model) {
+  const requested = String(process.env.GEMINI_JUDGE_THINKING_LEVEL || "").trim().toLowerCase();
+  if (requested && requested !== "none" && requested !== "off" && requested !== "disabled") {
+    return { thinkingLevel: requested };
+  }
+  // Gemini 3.x Flash/Flash-Lite use thinkingLevel; "minimal" is the closest to off.
+  const normalized = String(model || "").toLowerCase();
+  if (
+    normalized.includes("3.") ||
+    normalized === "gemini-flash-latest" ||
+    normalized === "gemini-flash-lite-latest"
+  ) {
+    return { thinkingLevel: "minimal" };
+  }
+  return null;
+}
+
+function geminiJudgeEndpoint() {
+  return (
+    GEMINI_API_BASE_URL + "/models/" + encodeURIComponent(JUDGE_MODEL) + ":streamGenerateContent?alt=sse"
+  );
+}
+
+function buildGeminiJudgeRequestBody(request) {
+  const promptText = [
+    request.judge_prompt,
+    "",
+    "## Candidate Hashes",
+    JSON.stringify(request.candidate_hashes, null, 2),
+    "",
+    "## Response Schema",
+    JSON.stringify(request.response_schema, null, 2),
+    "",
+    "## Allowed Evidence Refs",
+    JSON.stringify(request.evidence_refs, null, 2),
+  ].join("\n");
+  const generationConfig = {
+    responseMimeType: "application/json",
+    responseJsonSchema: request.response_schema,
+  };
+  const thinkingConfig = geminiJudgeThinkingConfig(JUDGE_MODEL);
+  if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
+  return {
+    body: {
+      systemInstruction: {
+        parts: [
+          {
+            text: "You are an evidence-grounded compaction quality judge. Output only strict JSON matching the requested schema.",
+          },
+        ],
+      },
+      contents: [{ role: "user", parts: [{ text: promptText }] }],
+      generationConfig,
+    },
+  };
+}
+
+function redactGeminiJudgeRequestForLog(endpoint, body) {
+  return {
+    url: endpoint,
+    method: "POST",
+    headers: {
+      "x-goog-api-key": "<redacted>",
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body,
+  };
+}
+
+function collectGeminiOutputText(events) {
+  let text = "";
+  for (const event of events) {
+    for (const candidate of event.candidates || []) {
+      for (const part of candidate.content?.parts || []) {
+        if (typeof part.text === "string") text += part.text;
+      }
+    }
+  }
+  return text.trim();
+}
+
+function geminiUsage(events) {
+  return [...events].reverse().find((event) => event?.usageMetadata)?.usageMetadata ?? null;
+}
+
+async function callGeminiJudge(request, outDir) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini");
+  }
+  const endpoint = geminiJudgeEndpoint();
+  const geminiRequest = buildGeminiJudgeRequestBody(request);
+  await writeFile(
+    join(outDir, "semantic-judge-gemini-request.redacted.json"),
+    JSON.stringify(redactGeminiJudgeRequestForLog(endpoint, geminiRequest.body), null, 2) + "\n",
+  );
+
+  const startedAt = Date.now();
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": GEMINI_API_KEY,
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(geminiRequest.body),
+  });
+  const raw = await response.text();
+  await writeFile(join(outDir, "semantic-judge-response.sse"), raw);
+
+  if (!response.ok) {
+    const failure = {
+      ok: false,
+      dry_run: false,
+      live: true,
+      provider: "gemini",
+      endpoint,
+      model: JUDGE_MODEL,
+      status: response.status,
+      status_text: response.statusText,
+      body_preview: raw.slice(0, 1000),
+    };
+    await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(failure, null, 2) + "\n");
+    throw new Error("Gemini judge request failed with HTTP " + response.status);
+  }
+
+  const events = parseSse(raw);
+  const outputText = collectGeminiOutputText(events);
+  await writeFile(join(outDir, "semantic-judge-model-output.json"), outputText + "\n");
+  let judgeOutput;
+  try {
+    judgeOutput = JSON.parse(outputText);
+  } catch {
+    const failure = {
+      ok: false,
+      dry_run: false,
+      live: true,
+      provider: "gemini",
+      endpoint,
+      model: JUDGE_MODEL,
+      error: "output was not JSON",
+      output_sha256: sha256Text(outputText),
+      output_preview: outputText.slice(0, 1000),
+    };
+    await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(failure, null, 2) + "\n");
+    throw new Error("Gemini judge output was not JSON");
+  }
+
+  const allowedRefs = new Set((request.evidence_refs || []).map((ref) => ref.id));
+  const validationError = validateJudgeOutput(
+    judgeOutput,
+    allowedRefs,
+    request.candidate_hashes,
+    request.rubric.version,
+  );
+  const calculated = calculatedJudgeOutcome(judgeOutput);
+  const result = {
+    ok: !validationError,
+    dry_run: false,
+    live: true,
+    provider: "gemini",
+    endpoint,
+    model: JUDGE_MODEL,
+    elapsed_ms: Date.now() - startedAt,
+    event_count: events.length,
+    usage: geminiUsage(events),
+    output_sha256: sha256Text(outputText),
+    validation_error: validationError,
+    total_level_score: calculated.totalLevelScore,
+    reported_total_level_score: judgeOutput.total_level_score ?? null,
+    overall_pass: calculated.overallPass,
+    reported_overall_pass: judgeOutput.overall_pass ?? null,
+    judge_consistency_warnings: calculated.warnings,
+    dimension_count: Array.isArray(judgeOutput.dimensions) ? judgeOutput.dimensions.length : 0,
+  };
+  await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(result, null, 2) + "\n");
+  if (validationError) throw new Error("Gemini judge output failed validation: " + validationError);
+  return result;
+}
+
+function callJudge(request, outDir) {
+  if (JUDGE_PROVIDER === "gemini") return callGeminiJudge(request, outDir);
+  return callCodexJudge(request, outDir);
+}
+
 // Run JUDGE_TRIALS independent judge passes and aggregate them by per-dimension
 // median (self-consistency). Each trial gets a fresh session, so the samples are
 // independent. With JUDGE_TRIALS === 1 this is exactly a single callCodexJudge.
 async function judgeWithTrials(request, outDir) {
-  if (JUDGE_TRIALS === 1) return callCodexJudge(request, outDir);
+  if (JUDGE_TRIALS === 1) return callJudge(request, outDir);
   const trialOutputs = [];
   const perTrial = [];
   for (let i = 0; i < JUDGE_TRIALS; i++) {
     const trialDir = join(outDir, "trial" + i);
     await mkdir(trialDir, { recursive: true });
     try {
-      const r = await callCodexJudge(request, trialDir);
+      const r = await callJudge(request, trialDir);
       const out = JSON.parse(await readFile(join(trialDir, "semantic-judge-model-output.json"), "utf8"));
       trialOutputs.push(out);
       perTrial.push({
@@ -741,7 +943,7 @@ async function judgeWithTrials(request, outDir) {
     }
   }
   if (trialOutputs.length === 0) {
-    const failure = { ok: false, live: true, provider: "codex", error: "all judge trials failed", trials: JUDGE_TRIALS, per_trial: perTrial };
+    const failure = { ok: false, live: true, provider: JUDGE_PROVIDER, error: "all judge trials failed", trials: JUDGE_TRIALS, per_trial: perTrial };
     await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(failure, null, 2) + "\n");
     throw new Error("all judge trials failed");
   }
@@ -753,10 +955,10 @@ async function judgeWithTrials(request, outDir) {
   const result = {
     ok: !validationError,
     live: true,
-    provider: "codex",
+    provider: JUDGE_PROVIDER,
     model: JUDGE_MODEL,
-    reasoning_effort: JUDGE_REASONING_EFFORT,
-    service_tier: JUDGE_SERVICE_TIER,
+    reasoning_effort: JUDGE_PROVIDER === "codex" ? JUDGE_REASONING_EFFORT : null,
+    service_tier: JUDGE_PROVIDER === "codex" ? JUDGE_SERVICE_TIER : null,
     trials: JUDGE_TRIALS,
     valid_trials: trialOutputs.length,
     aggregation: "per_dimension_median",

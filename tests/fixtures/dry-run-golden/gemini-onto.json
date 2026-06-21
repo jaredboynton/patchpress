@@ -23,7 +23,7 @@
     "transcript_records": 16,
     "transcript_renderer": "onto",
     "estimated_char_div_4_tokens": 32188,
-    "request_body_bytes": 133108,
+    "request_body_bytes": 133130,
     "wrapped_transcript_bytes": 120348,
     "wrapped_transcript_estimated_tokens": 30084,
     "live_output": true,

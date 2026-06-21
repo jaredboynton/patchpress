@@ -38,8 +38,8 @@ check("raw cited findings provenance saved", nFindings >= 20, nFindings + " find
 // 1. SOURCE wiring.
 console.log("1. SOURCE (scripts/compact-full-transcript.mjs):");
 const src = readFileSync(resolve(repoRoot, "scripts/compact-full-transcript.mjs"), "utf8");
-check("--adapt-prompt flag", /ADAPT_PROMPT = process\.argv\.includes\("--adapt-prompt"\)/.test(src));
-check("buildPromptAdaptations imported + called", /import \{ buildPromptAdaptations \}/.test(src) && /buildPromptAdaptations\(\{ provider: PROVIDER, model: MODEL \}\)/.test(src));
+check("--adapt-prompt flag", /--adapt-prompt/.test(src) && /ADAPT_PROMPT =/.test(src));
+check("buildPromptAdaptations imported + called", /import \{ buildPromptAdaptations, modelTraits \}/.test(src) && /buildPromptAdaptations\(\{ provider: PROVIDER, model: MODEL \}\)/.test(src));
 check("adaptation lines appended to prompt", /adaptationLines: ADAPT_PROMPT \? promptAdaptation\.lines : \[\]/.test(src) && /MODEL-SPECIFIC COMPLETENESS REQUIREMENTS/.test(src));
 
 // 2. DISPATCH dynamic per provider/model.
@@ -52,13 +52,15 @@ function expect(label, got, mustInclude, mustExclude) {
   check(label + " -> [" + got.join(", ") + "]", ok);
 }
 expect("codex/gpt-5.4 (strong: none)", applied("codex", "gpt-5.4"), [], ["enumerate-not-summarize", "bedrock-count-floor"]);
-expect("gemini-3.5-flash (strong: none)", applied("gemini", "gemini-3.5-flash"), [], ["enumerate-not-summarize", "gemini-density-steer"]);
+expect("gemini-3.5-flash (sectional)", applied("gemini", "gemini-3.5-flash"),
+  ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "gemini-35-flash-sectional"],
+  ["bedrock-count-floor", "nonreasoning-decompose", "xai-mine-transcript"]);
 expect("mantle/grok-4.3", applied("mantle", "xai.grok-4.3"),
-  ["enumerate-not-summarize", "completion-contract", "preserve-literals", "bedrock-count-floor", "xai-mine-transcript"], ["gemini-density-steer"]);
+  ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "bedrock-count-floor", "xai-mine-transcript"], ["gemini-density-steer"]);
 expect("flash-lite", applied("gemini", "gemini-3.1-flash-lite"),
-  ["enumerate-not-summarize", "nonreasoning-decompose", "gemini-density-steer"], ["bedrock-count-floor", "xai-mine-transcript"]);
+  ["sectional-handoff-shape", "enumerate-not-summarize", "nonreasoning-decompose", "gemini-density-steer"], ["bedrock-count-floor", "xai-mine-transcript"]);
 expect("xai/grok-4.20-non-reasoning", applied("xai", "grok-4.20-0309-non-reasoning"),
-  ["xai-mine-transcript", "nonreasoning-decompose"], ["bedrock-count-floor", "gemini-density-steer"]);
+  ["sectional-handoff-shape", "xai-mine-transcript", "nonreasoning-decompose"], ["bedrock-count-floor", "gemini-density-steer"]);
 
 // 3. DEFAULT inert (parity).
 console.log("3. DEFAULT (--adapt-prompt off leaves the request byte-identical):");

@@ -7,7 +7,7 @@ import { arch, homedir, platform, release } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateHandoffDensity, DEFAULT_DENSITY_THRESHOLDS } from "./handoff-density.mjs";
-import { buildPromptAdaptations } from "./prompt-adaptation.mjs";
+import { buildPromptAdaptations, modelTraits } from "./prompt-adaptation.mjs";
 
 // Load .env relative to the script directory
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,8 +43,35 @@ function argValue(name, fallback = undefined) {
   return idx === -1 ? fallback : process.argv[idx + 1];
 }
 
+// Real-tokenizer count for the codex default-model switch. Loads js-tiktoken
+// lazily (only codex default runs reach here) and memoizes the encoder. gpt-5.x
+// is not in js-tiktoken's model map, so encodingForModel falls back to the
+// o200k_base encoding it shares. Any tokenizer failure degrades to the char/4
+// estimate with a stderr warning rather than failing the compaction.
+let _compactEncoder;
+async function countRenderedTokens(text, model) {
+  try {
+    if (!_compactEncoder) {
+      const tk = await import("js-tiktoken");
+      try {
+        _compactEncoder = tk.encodingForModel(model);
+      } catch {
+        _compactEncoder = tk.getEncoding("o200k_base");
+      }
+    }
+    return _compactEncoder.encode(text).length;
+  } catch (error) {
+    process.stderr.write(
+      "[codex model-switch] tokenizer unavailable, using char/4 estimate: " +
+        error.message +
+        "\n"
+    );
+    return Math.ceil(text.length / 4);
+  }
+}
+
 const PROVIDER_REGISTRY = {
-  codex:  { family: "codex",  defaultModel: () => process.env.CODEX_COMPACT_MODEL || "gpt-5.4" },
+  codex:  { family: "codex",  defaultModel: () => process.env.CODEX_COMPACT_MODEL || "gpt-5.4", resolveModel: (renderedTokens) => renderedTokens < CODEX_MODEL_TOKEN_THRESHOLD ? "gpt-5.5" : "gpt-5.4" },
   gemini: { family: "gemini", resolveKey: () => process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "", endpoint: () => (process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "") + "/models/" + encodeURIComponent(MODEL) + ":streamGenerateContent?alt=sse", defaultModel: () => process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash", missingKeyMsg: "Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini" },
   xai:    { family: "chat",   resolveKey: () => process.env.XAI_API_KEY || "", endpoint: () => (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/chat/completions", defaultModel: () => process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning", missingKeyMsg: "Missing XAI_API_KEY for --provider xai" },
   mantle: { family: "chat",   resolveKey: () => process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || process.env.AWS_BEARER_TOKEN_BEDROCK || "", endpoint: () => process.env.MANTLE_CHAT_COMPLETIONS_URL || "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions", defaultModel: () => process.env.MANTLE_COMPACT_MODEL || "xai.grok-4.3", missingKeyMsg: "Missing MANTLE_API_KEY, BEDROCK_MANTLE_API_KEY, or AWS_BEARER_TOKEN_BEDROCK for --provider mantle" },
@@ -71,10 +98,21 @@ const CODEX_ORIGINATOR = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || "code
 const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || resolveCodexClientVersion();
 const CODEX_USER_AGENT = process.env.CODEX_USER_AGENT || buildCodexUserAgent();
 const DEFAULT_INPUT = "transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl";
-const MODEL =
+let MODEL =
   argValue("--model") ||
   process.env.COMPACT_MODEL ||
   PROVIDER_REGISTRY[PROVIDER].defaultModel();
+// When codex runs on its default model (no explicit override), MODEL is
+// re-resolved after the transcript is rendered: gpt-5.5 when the rendered
+// transcript fits its 272k-token input window, else gpt-5.4. See the
+// post-render block in main() and PROVIDER_REGISTRY.codex.resolveModel.
+const MODEL_EXPLICIT = Boolean(
+  argValue("--model") || process.env.COMPACT_MODEL || process.env.CODEX_COMPACT_MODEL
+);
+const CODEX_MODEL_TOKEN_THRESHOLD = Number.parseInt(
+  process.env.CODEX_MODEL_TOKEN_THRESHOLD || "272000",
+  10
+);
 const SERVICE_TIER = process.env.CODEX_COMPACT_SERVICE_TIER || "priority";
 const REASONING_EFFORT = process.env.CODEX_COMPACT_REASONING_EFFORT || "low";
 const GEMINI_THINKING_LEVEL =
@@ -206,10 +244,21 @@ const CHAT_REASONING_EFFORT = argValue("--reasoning-effort", process.env.COMPACT
 // Density-gated validate-and-reask loop (docs/prompt-adaptation/design.md). Off by
 // default (--max-reasks 0); when >0, a structurally-valid but thin handoff is
 // re-requested with corrective feedback up to N times, keeping the densest attempt.
-const MAX_REASKS = intArg("--max-reasks", Number.parseInt(process.env.COMPACT_MAX_REASKS || "0", 10) || 0);
+// --reask-until-pass loops until the density gate clears (cap: --max-reasks, default 10).
+const REASK_UNTIL_PASS =
+  process.argv.includes("--reask-until-pass") || process.env.COMPACT_REASK_UNTIL_PASS === "1";
+const MAX_REASKS = intArg(
+  "--max-reasks",
+  Number.parseInt(process.env.COMPACT_MAX_REASKS || (REASK_UNTIL_PASS ? "10" : "0"), 10) || 0,
+);
 // Dynamic per-provider/model prompt-mutation system (docs/prompt-adaptation/provider-prompting.md).
 // Off by default; when on, model-specific completeness augmentations are appended to the prompt.
-const ADAPT_PROMPT = process.argv.includes("--adapt-prompt") || process.env.COMPACT_ADAPT_PROMPT === "1";
+// Auto-enabled for non-codex models when --reask-until-pass is set.
+const _promptTraits = modelTraits({ provider: PROVIDER, model: MODEL });
+const ADAPT_PROMPT =
+  process.argv.includes("--adapt-prompt") ||
+  process.env.COMPACT_ADAPT_PROMPT === "1" ||
+  (REASK_UNTIL_PASS && !_promptTraits.isStrong);
 const DENSITY_THRESHOLDS = {
   minEvidenceCapsules: intArg("--min-evidence-capsules", DEFAULT_DENSITY_THRESHOLDS.minEvidenceCapsules),
   minCitedLines: intArg("--min-cited-lines", DEFAULT_DENSITY_THRESHOLDS.minCitedLines),
@@ -613,12 +662,13 @@ function ontoMetaField(value) {
   return String(value == null ? "" : value).replace(/\s+/g, "_").replace(/\|/g, "/");
 }
 
-// ONTO columnar renderer (arXiv:2604.17512). The per-record metadata keys
-// (line|type|role|ts|chars) are declared once in the @@ONTO header; each record
-// is one pipe-delimited value row (empty fields render as ONTO null) followed by
-// its body, instead of repeating key= tokens on every record like the sentinel
-// and stripped renderers do. A record starts at any line matching ^\d{6}\| ; body
-// lines that would collide with that shape are space-escaped.
+// ONTO-inspired schema-once row-major renderer (arXiv:2604.17512). Per-record
+// metadata keys (line|type|role|ts|chars) are declared once in the @@ONTO header;
+// each record is one pipe-delimited value row (empty fields render as ONTO null)
+// followed by its free-text body. Row-major (not the paper's column-major field
+// lines) preserves the per-record line anchor the scorer/rehydrator depend on.
+// Drops per-record key= repetition used by sentinel and stripped. A record starts
+// at ^\d{6}\|; body lines that would collide are space-escaped.
 function renderOntoRecord(entry, context) {
   const linePadded = String(entry.lineNumber).padStart(6, "0");
   let record;
@@ -1659,7 +1709,7 @@ function rendererEvidenceInstructions(renderer) {
   }
   if (renderer === "onto") {
     return [
-      "- The transcript uses ONTO columnar framing: the first line '@@ONTO Transcript[N] fields=line|type|role|ts|chars' declares the per-record metadata keys once.",
+      "- The transcript uses ONTO-inspired schema-once row-major framing: the first line '@@ONTO Transcript[N] fields=line|type|role|ts|chars' declares the per-record metadata keys once.",
       "- Each record then starts with one pipe-delimited value row 'line|type|role|ts|chars' (empty fields are null), immediately followed by that record's body until the next row.",
       "- Use the first pipe field (the zero-padded one-based logical JSONL record number) from each row for every source span.",
       "- Some older tool-output records may be body-compressed with an explicit sha256 marker; cite the record line when that compressed output matters, because the harness rehydrates exact content from the source JSONL.",
@@ -4051,6 +4101,27 @@ async function main() {
   const citableTranscript = filterCitableTranscript(transcript);
   const records = parseJsonl(citableTranscript);
   const lineHashArtifacts = buildRecordArtifacts(citableTranscript);
+  // Codex default-model switch: pick gpt-5.5 when the rendered transcript fits
+  // the 272k-token input window, else gpt-5.4. Registry-scoped (only codex
+  // defines resolveModel) so other providers are untouched, and skipped when the
+  // model was set explicitly. Runs before any consumer of MODEL.
+  const codexResolveModel = PROVIDER_REGISTRY[PROVIDER].resolveModel;
+  if (codexResolveModel && !MODEL_EXPLICIT) {
+    const renderedTokens = await countRenderedTokens(
+      lineHashArtifacts.wrappedTranscript,
+      MODEL
+    );
+    MODEL = codexResolveModel(renderedTokens);
+    process.stderr.write(
+      "[codex model-switch] rendered_tokens=" +
+        renderedTokens +
+        " threshold=" +
+        CODEX_MODEL_TOKEN_THRESHOLD +
+        " model=" +
+        MODEL +
+        "\n"
+    );
+  }
   const sha256 = createHash("sha256").update(transcript).digest("hex");
   const stats = {
     inputPath,
@@ -4353,19 +4424,21 @@ async function main() {
   }
 
   const reaskDensity =
-    loadedFromOutput || MAX_REASKS === 0
+    loadedFromOutput || (MAX_REASKS === 0 && !REASK_UNTIL_PASS)
       ? { pass: true, score: 1, shortfalls: [], feedback: "", metrics: {} }
       : evaluateHandoffDensity(summary, DENSITY_THRESHOLDS);
   if (!reaskBest || reaskDensity.score >= reaskBest.density.score) {
     reaskBest = { summary, outputText, events, density: reaskDensity };
   }
-  if (reaskDensity.pass || loadedFromOutput || reaskAttempt >= MAX_REASKS) break;
+  if (reaskDensity.pass || loadedFromOutput) break;
+  if (reaskAttempt >= MAX_REASKS) break;
   reaskFeedback = reaskDensity.feedback;
   process.stderr.write(
     "reask " +
       (reaskAttempt + 1) +
       "/" +
       MAX_REASKS +
+      (REASK_UNTIL_PASS ? " (until-pass)" : "") +
       " (density " +
       JSON.stringify(reaskDensity.metrics) +
       "): re-requesting with corrective feedback\n"
@@ -4374,6 +4447,18 @@ async function main() {
   summary = reaskBest.summary;
   outputText = reaskBest.outputText;
   events = reaskBest.events;
+  if (!loadedFromOutput && REASK_UNTIL_PASS && MAX_REASKS > 0 && !reaskBest.density.pass) {
+    const failure = {
+      ok: false,
+      error: "handoff density gate did not pass after " + MAX_REASKS + " reask(s)",
+      density: reaskBest.density,
+      thresholds: DENSITY_THRESHOLDS,
+      request: requestMeta,
+    };
+    await writeFile(join(outDir, "failure.json"), JSON.stringify(failure, null, 2) + "\n");
+    console.error(JSON.stringify(failure, null, 2));
+    process.exit(1);
+  }
   if (!loadedFromOutput && MAX_REASKS > 0) {
     await writeFile(modelOutputPath, outputText + "\n");
   }

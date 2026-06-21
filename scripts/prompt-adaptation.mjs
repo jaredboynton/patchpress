@@ -26,7 +26,9 @@ export function modelTraits({ provider, model }) {
     m.includes("non-reasoning") || m.includes("grok-4.20") || m.includes("flash-lite");
   const isThinProne =
     m.includes("grok-4.3") || m.includes("grok-4.20") || m.includes("flash-lite");
-  const isStrong = p === "codex" || (p === "gemini" && m.includes("flash") && !m.includes("lite"));
+  const isGemini35Flash =
+    p === "gemini" && (m.includes("3.5-flash") || m.includes("3-5-flash"));
+  const isStrong = p === "codex";
   return {
     provider: p,
     model: m,
@@ -36,6 +38,7 @@ export function modelTraits({ provider, model }) {
     isXai: p === "xai" || (isBedrock && isXaiModel),
     isGemini: p === "gemini",
     isCodex: p === "codex",
+    isGemini35Flash,
     // Non-reasoning / low-thinking variants follow instructions literally and need
     // explicit decomposition + imperative completeness floors.
     isNonReasoning,
@@ -44,7 +47,7 @@ export function modelTraits({ provider, model }) {
     // Strong instruction-followers that already produce dense handoffs; left alone.
     isStrong,
     // Models that benefit from the cross-cutting completeness block.
-    isWeak: isThinProne || isNonReasoning || isBedrock,
+    isWeak: isThinProne || isNonReasoning || isBedrock || isGemini35Flash,
   };
 }
 
@@ -74,6 +77,27 @@ export function buildPromptAdaptations({ provider, model }) {
 // emitted in registry order. The cross-cutting block targets weak models; strong
 // instruction-followers (codex, gemini-flash) get nothing and stay byte-identical.
 // ---------------------------------------------------------------------------
+
+// Cross-cutting: codex-grade sectional shape (pattern from gpt-5.5 benchmark handoffs).
+// Weak models collapse into 2-3 mega-blocks; dense handoffs use 8-10 named sections
+// with multi-span anchoring and literal enumeration per domain.
+adapt({
+  id: "sectional-handoff-shape",
+  applies: (t) => t.isWeak,
+  lines: [
+    "Handoff shape (match dense codex-quality output): emit at least 8 summary_blocks as",
+    "named thematic sections -- e.g. current state; current user intent/constraints;",
+    "active artifacts (every path listed); unresolved/pending work; then split domain",
+    "findings into separate blocks (tooling/skill status, binary/static analysis, transport/",
+    "capture, endpoints/payloads, model registry, research decisions). Do NOT merge those",
+    "domains into one paragraph.",
+    "Each block: one dense paragraph naming exact file paths, protocol strings (e.g.",
+    "application/proto, HTTPS_PROXY), RPC/service names, version numbers, cache paths, and",
+    "numeric facts; attach 2-4 distinct source_spans across different transcript line ranges.",
+    "Populate rules_and_invariants (security/style/constraints), plans_and_task_state",
+    "(done + pending), and promises_made (every explicit assistant commitment with spans).",
+  ],
+});
 
 // Cross-cutting: reframe summary -> exhaustive enumeration.
 // Cite: oh-my-openagent ultrawork/{codex,default}.md; Anthropic claude-4 best-practices.
@@ -150,6 +174,18 @@ adapt({
     "file path, command, and config value touched + its line; (4) every explicit 'I will' / next-step",
     "commitment + its exact quote. Completeness is measured by COUNT: a longer array of verbatim",
     "spans is correct; a shorter 'summary' array is a failure.",
+  ],
+});
+
+// Gemini 3.5 Flash: strong but defaults to moderate depth; steer toward codex-grade sections.
+adapt({
+  id: "gemini-35-flash-sectional",
+  applies: (t) => t.isGemini35Flash,
+  lines: [
+    "gemini-3.5-flash: your default is balanced prose -- here prioritize DEPTH over brevity.",
+    "Target 8-10 summary_blocks minimum, each with multiple source_spans and verbatim literals.",
+    "Split transport, endpoints, and model-discovery into separate blocks; include every doc/",
+    "proto/script path under the active artifact tree and every RPC name captured in the session.",
   ],
 });
 

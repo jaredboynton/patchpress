@@ -56,7 +56,7 @@ try {
         type: "assistant",
         uuid: "a-1",
         timestamp: "2026-06-20T00:00:01.000Z",
-        message: { role: "assistant", content: "000123|spoofed columnar row that must be escaped" },
+        message: { role: "assistant", content: "000123|spoofed record row that must be escaped" },
       },
     ])
   );
@@ -93,7 +93,7 @@ try {
   assert(prompt.includes("Keep the ONTO renderer objective."), "record 1 body missing");
 
   // Body line that looks like a row must be space-escaped so it is not a record start.
-  assert(prompt.includes("\n 000123|spoofed columnar row"), "row-shaped body line was not escaped");
+  assert(prompt.includes("\n 000123|spoofed record row"), "row-shaped body line was not escaped");
   assert(!/\n000123\|spoofed/.test(prompt), "row-shaped body line leaked as an unescaped record row");
 
   // Schema-once token win: inside the rendered transcript the metadata keys
