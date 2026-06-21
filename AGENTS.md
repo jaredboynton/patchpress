@@ -11,6 +11,10 @@
   - **wafer** (OpenAI-compatible gateway `pass.wafer.ai`, default model `GLM-5.2`): `WAFER_API_KEY` in `.env`, mirrored from `~/.zshrc`. Needs a funded Wafer account balance.
   Keys live only in the gitignored `.env`; do not duplicate them in tracked files. The compaction redirect pins `--provider mantle`, so the live patch runs on the `.env` Bedrock credential.
 
+## Adding a compaction provider
+
+Provider dispatch is table-driven. To add an OpenAI chat-completions-compatible provider, add ONE entry to `PROVIDER_REGISTRY` ([compact-full-transcript.mjs:44](file:///Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/compact-full-transcript.mjs)) with `family: "chat"`, `resolveKey`, `endpoint`, `defaultModel`, and `missingKeyMsg`. Everything else (request builder, endpoint, redaction, SSE parsing, auth gate, Bearer header, metadata fields) reads off `PROVIDER_REGISTRY[PROVIDER].family`, so no other edit is needed. A provider on a genuinely different API shape needs a new family branch in the four family-keyed dispatchers (`buildRequestBody`, `providerEndpoint`, `redactRequestForLog`, `streamAdapter`) plus its own request builder. `scripts/dry-factor.mjs` reports the provider-coupling count (the lower the better); `scripts/test-provider-dry-parity.mjs` proves a dispatch change altered no request body by diffing all provider x renderer dry-runs against `tests/fixtures/dry-run-golden/` (regenerate fixtures intentionally with `--update`).
+
 ## Compaction Patcher & Launcher Shim Integration
 
 ### Architecture
