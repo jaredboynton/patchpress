@@ -35,3 +35,11 @@ To substitute native Anthropic API compaction in Claude Code with the custom har
 
 The user command [~/bin/claude](file:///Users/jaredboynton/bin/claude) is first in the interactive PATH and is not rewritten by Claude Code's auto-updater, which only re-symlinks `~/.local/bin/claude` to the new version (deobfuscated installer `3761.js:465`). Before exec, the wrapper resolves the latest `~/.local/share/claude/versions/<semver>` binary and, when the `CLAUDE_COMPACT_PATCH_v1` marker is absent, runs the patcher on it. This is the durable persistence hook: every post-update version is patched on its first launch. The block fails open, so a patch error never blocks launching Claude Code. `CLAUDE_COMPACT_PATCHER` and `CLAUDE_VERSIONS_DIR` override the patcher and versions-directory paths. The `~/.local/bin/claude` shim performs the same patch-on-launch for the current session; the updater overwrites it on the next update, so `~/bin/claude` is what carries the patch across versions.
 
+## Benchmark procedure (token-compressed)
+
+Tx=`transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl` (sha `22894a74...`, ~595k tok). Per provider P / model M, run BOTH renderers R in {sentinel, stripped}:
+`node scripts/compact-full-transcript.mjs --provider P --model M --transcript-renderer R --input Tx --out-dir runs/bench-P-R` (defaults: preserve-tail 16, temp null).
+Score each: `node scripts/score-compaction-result.mjs runs/bench-P-R` -> deterministic /100 (`deterministic-compaction-score.v2`).
+Judge each: `node scripts/judge-compaction-result.mjs runs/bench-P-R` -> `gpt-5.5`, medium reasoning, 3 trials, per-dimension median, /10.
+Then add one `docs/benchmark.md` table row per renderer: Wall, Det /100, Judge /10, input/summary/after tok, Rules/Plans/Promises, Capsules, Cited lines; refresh the Headline. Transient `rate_limit_error` / `ttfb_gate_shed` ("at capacity") -> retry. OpenAI-compatible providers (xai, mantle, wafer) share the chat-completions path.
+
