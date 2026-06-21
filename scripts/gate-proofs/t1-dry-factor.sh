@@ -7,7 +7,7 @@ echo "### PROVIDER_REGISTRY single table definition (the one edit site to add a 
 /usr/bin/grep -nF "const PROVIDER_REGISTRY = {" scripts/compact-full-transcript.mjs
 echo
 echo "### Hardcoded per-provider-name dispatch comparisons remaining (was the 10-places pain):"
-n=$(/usr/bin/grep -cE 'PROVIDER === "(codex|gemini|xai|mantle|wafer)"' scripts/compact-full-transcript.mjs || true)
+n=$(/usr/bin/grep -cE 'PROVIDER === "(codex|gemini|xai|mantle)"' scripts/compact-full-transcript.mjs || true)
 echo "count = $n  (0 means every per-provider-name dispatch chain is gone, replaced by family lookups)"
 echo
 echo "### Dispatch keys off registry family instead:"

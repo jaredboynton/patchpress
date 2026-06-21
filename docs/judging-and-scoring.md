@@ -94,7 +94,7 @@ Schema: `deterministic-compaction-score.v2` (max 100)
 | `continuity_state` | 20 | user-intent events, active objective, next step, and at least one rule, plan item, and promise |
 | `exact_literal_recovery` | 20 | required fixture literals appear in `summary.rehydrated.md` |
 | `unsupported_claims` | 10 | no high-risk literal lives only in hidden state while missing from the readable handoff |
-| `footprint` | 10 | non-empty compact output and after-token estimate within the configured bound |
+| `footprint` | 10 | non-empty compact output and after-token estimate within the configured bound (`max_after_estimated_tokens`, set to the 23,022-token accepted baseline; defaults to 6000 when the fixture omits it) |
 
 `state_retention` is also reported as a roll-up of `evidence_grounding` +
 `continuity_state` (max 35).

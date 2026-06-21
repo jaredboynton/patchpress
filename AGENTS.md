@@ -8,7 +8,6 @@
   - **gemini**: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in `.env`, mirrored from `~/.zshrc`.
   - **xai**: `XAI_API_KEY` in `.env`, mirrored from `~/.zshrc`.
   - **mantle**: `AWS_BEARER_TOKEN_BEDROCK` (or `MANTLE_API_KEY` / `BEDROCK_MANTLE_API_KEY`) in `.env`.
-  - **wafer** (OpenAI-compatible gateway `pass.wafer.ai`, default model `GLM-5.2`): `WAFER_API_KEY` in `.env`, mirrored from `~/.zshrc`. Needs a funded Wafer account balance.
   Keys live only in the gitignored `.env`; do not duplicate them in tracked files. The compaction redirect pins `--provider mantle`, so the live patch runs on the `.env` Bedrock credential.
 
 ## Adding a compaction provider
@@ -41,9 +40,10 @@ The user command [~/bin/claude](file:///Users/jaredboynton/bin/claude) is first 
 
 ## Benchmark procedure (token-compressed)
 
-Tx=`transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl` (sha `22894a74...`, ~595k tok). Per provider P / model M, run BOTH renderers R in {sentinel, stripped}:
-`node scripts/compact-full-transcript.mjs --provider P --model M --transcript-renderer R --input Tx --out-dir runs/bench-P-R` (defaults: preserve-tail 16; temp 0.4 for grok-4.3/grok-4.20/flash-lite, else unset). Chat providers (xai/mantle/wafer) accept `--reasoning-effort none|low|medium|high`; grok-4.3 needs `medium` to clear the deterministic gate.
+Tx=`transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl` (sha `22894a74...`, ~595k tok). Per provider P / model M, run the renderers R in {sentinel, stripped, onto}:
+`node scripts/compact-full-transcript.mjs --provider P --model M --transcript-renderer R --input Tx --out-dir runs/bench-P-R` (defaults: preserve-tail 16; temp 0.4 for grok-4.3/grok-4.20/flash-lite, else unset). Chat providers (xai/mantle) accept `--reasoning-effort none|low|medium|high`; grok-4.3 needs `medium` to clear the deterministic gate.
+Renderers: `stripped`/`sentinel`/`onto` differ only in record framing. `onto` (arXiv:2604.17512) is schema-once columnar: one `@@ONTO Transcript[N] fields=line|type|role|ts|chars` header, then pipe-delimited metadata rows + body, dropping the per-record `key=` repetition of the other two. `sentinel`/`onto` also compress old tool outputs; `--tool-output-compress-strategy` selects `headtail` (default, blind head/tail window) or `dspc` (arXiv:2509.13723: TF-IDF coarse sentence filter then a multi-signal importance pick; model-derived attention/loss signals are realized as deterministic lexical proxies, positional Gaussian is exact). DSPC is tunable via `--dspc-stage1-ratio` and `--dspc-beta-{attn,loss,pos}`. Both new features keep the renderer path offline/deterministic, asserted by `scripts/test-onto-renderer.mjs` and `scripts/test-dspc-compression.mjs`.
 Score each: `node scripts/score-compaction-result.mjs runs/bench-P-R` -> deterministic /100 (`deterministic-compaction-score.v2`).
 Judge each: `node scripts/judge-compaction-result.mjs runs/bench-P-R` -> `gpt-5.5`, medium reasoning, 3 trials, per-dimension median, /10.
-Then add one `docs/benchmark.md` table row per renderer: Wall, Det /100, Judge /10, input/summary/after tok, Rules/Plans/Promises, Capsules, Cited lines; refresh the Headline. Transient `rate_limit_error` / `ttfb_gate_shed` ("at capacity") -> retry. OpenAI-compatible providers (xai, mantle, wafer) share the chat-completions path.
+Then add one `docs/benchmark.md` table row per renderer: Wall, Det /100, Judge /10, input/summary/after tok, Rules/Plans/Promises, Capsules, Cited lines; refresh the Headline. Transient `rate_limit_error` / `ttfb_gate_shed` ("at capacity") -> retry. OpenAI-compatible providers (xai, mantle) share the chat-completions path.
 

@@ -6,6 +6,8 @@ import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 import { arch, homedir, platform, release } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { evaluateHandoffDensity, DEFAULT_DENSITY_THRESHOLDS } from "./handoff-density.mjs";
+import { buildPromptAdaptations } from "./prompt-adaptation.mjs";
 
 // Load .env relative to the script directory
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,7 +48,6 @@ const PROVIDER_REGISTRY = {
   gemini: { family: "gemini", resolveKey: () => process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "", endpoint: () => (process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "") + "/models/" + encodeURIComponent(MODEL) + ":streamGenerateContent?alt=sse", defaultModel: () => process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash", missingKeyMsg: "Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini" },
   xai:    { family: "chat",   resolveKey: () => process.env.XAI_API_KEY || "", endpoint: () => (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/chat/completions", defaultModel: () => process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning", missingKeyMsg: "Missing XAI_API_KEY for --provider xai" },
   mantle: { family: "chat",   resolveKey: () => process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || process.env.AWS_BEARER_TOKEN_BEDROCK || "", endpoint: () => process.env.MANTLE_CHAT_COMPLETIONS_URL || "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions", defaultModel: () => process.env.MANTLE_COMPACT_MODEL || "xai.grok-4.3", missingKeyMsg: "Missing MANTLE_API_KEY, BEDROCK_MANTLE_API_KEY, or AWS_BEARER_TOKEN_BEDROCK for --provider mantle" },
-  wafer:  { family: "chat",   resolveKey: () => process.env.WAFER_API_KEY || "", endpoint: () => process.env.WAFER_CHAT_COMPLETIONS_URL || "https://pass.wafer.ai/v1/chat/completions", defaultModel: () => process.env.WAFER_COMPACT_MODEL || "GLM-5.2", missingKeyMsg: "Missing WAFER_API_KEY for --provider wafer" },
 };
 
 function normalizeProvider(value) {
@@ -182,8 +183,8 @@ const rendererStatsRenderers = argValue("--renderer-stats-renderers", "stripped,
   .map((value) => value.trim())
   .filter(Boolean);
 for (const renderer of rendererStatsRenderers) {
-  if (renderer !== "stripped" && renderer !== "sentinel" && renderer !== "jsonl") {
-    throw new Error("Expected --renderer-stats-renderers entries to be stripped, sentinel, or jsonl");
+  if (renderer !== "stripped" && renderer !== "sentinel" && renderer !== "jsonl" && renderer !== "onto") {
+    throw new Error("Expected --renderer-stats-renderers entries to be stripped, sentinel, jsonl, or onto");
   }
 }
 const temperatureRaw = argValue("--temperature", process.env.COMPACT_TEMPERATURE || "");
@@ -199,9 +200,21 @@ if (
 ) {
   TEMPERATURE = 0.4;
 }
-// Reasoning effort for the OpenAI-compatible chat-completions providers (xai/mantle/wafer).
+// Reasoning effort for the OpenAI-compatible chat-completions providers (xai/mantle).
 // Empty means omit the field and use the server default. Codex uses its own reasoning plumbing.
 const CHAT_REASONING_EFFORT = argValue("--reasoning-effort", process.env.COMPACT_REASONING_EFFORT || "");
+// Density-gated validate-and-reask loop (docs/prompt-adaptation/design.md). Off by
+// default (--max-reasks 0); when >0, a structurally-valid but thin handoff is
+// re-requested with corrective feedback up to N times, keeping the densest attempt.
+const MAX_REASKS = intArg("--max-reasks", Number.parseInt(process.env.COMPACT_MAX_REASKS || "0", 10) || 0);
+// Dynamic per-provider/model prompt-mutation system (docs/prompt-adaptation/provider-prompting.md).
+// Off by default; when on, model-specific completeness augmentations are appended to the prompt.
+const ADAPT_PROMPT = process.argv.includes("--adapt-prompt") || process.env.COMPACT_ADAPT_PROMPT === "1";
+const DENSITY_THRESHOLDS = {
+  minEvidenceCapsules: intArg("--min-evidence-capsules", DEFAULT_DENSITY_THRESHOLDS.minEvidenceCapsules),
+  minCitedLines: intArg("--min-cited-lines", DEFAULT_DENSITY_THRESHOLDS.minCitedLines),
+  minPromises: intArg("--min-promises", DEFAULT_DENSITY_THRESHOLDS.minPromises),
+};
 const customSummaryInstructions = argValue("--summary-instructions", "");
 const compactAndPrompt = argValue("--compact-and", "");
 const fromOutputPath = argValue("--from-output", "");
@@ -215,8 +228,8 @@ const transcriptRenderer = argValue(
   "--transcript-renderer",
   process.env.COMPACT_TRANSCRIPT_RENDERER || "stripped"
 );
-if (transcriptRenderer !== "stripped" && transcriptRenderer !== "sentinel" && transcriptRenderer !== "jsonl") {
-  throw new Error("Expected --transcript-renderer to be stripped, sentinel, or jsonl");
+if (transcriptRenderer !== "stripped" && transcriptRenderer !== "sentinel" && transcriptRenderer !== "jsonl" && transcriptRenderer !== "onto") {
+  throw new Error("Expected --transcript-renderer to be stripped, sentinel, jsonl, or onto");
 }
 const toolOutputCompressAfter =
   argValue("--tool-output-compress-after") === undefined
@@ -234,6 +247,37 @@ const toolOutputCompressTailChars =
   argValue("--tool-output-compress-tail-chars") === undefined
     ? intArg("--sentinel-old-tool-output-tail-chars", 500)
     : intArg("--tool-output-compress-tail-chars", 500);
+// Old tool-output compression strategy. "headtail" keeps a fixed head+tail window
+// (the original blind heuristic); "dspc" selects content by importance using the
+// DSPC two-stage pipeline (arXiv:2509.13723): coarse TF-IDF sentence filtering,
+// then a multi-signal score. The two model-derived signals in the paper
+// (last-layer attention, cross-model loss) are realized as deterministic lexical
+// proxies here because this renderer/compression path makes zero model calls;
+// the positional Gaussian (eq. 9) is computed exactly.
+const toolOutputCompressStrategy = argValue(
+  "--tool-output-compress-strategy",
+  process.env.COMPACT_TOOL_OUTPUT_STRATEGY || "headtail"
+);
+if (toolOutputCompressStrategy !== "headtail" && toolOutputCompressStrategy !== "dspc") {
+  throw new Error("Expected --tool-output-compress-strategy to be headtail or dspc");
+}
+function floatArg(name, fallback) {
+  const raw = argValue(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error("Expected " + name + " to be a finite number");
+  }
+  return parsed;
+}
+// DSPC hyperparameters. Defaults follow the paper's best configuration
+// (Stage-1 ratio rho=0.7; beta weights 0.6/0.3/0.1 for salience/informativeness/position).
+const dspcStage1Ratio = floatArg("--dspc-stage1-ratio", 0.7);
+const dspcBetaAttn = floatArg("--dspc-beta-attn", 0.6);
+const dspcBetaLoss = floatArg("--dspc-beta-loss", 0.3);
+const dspcBetaPos = floatArg("--dspc-beta-pos", 0.1);
+const dspcPosLambda = floatArg("--dspc-pos-lambda", 1.0);
+const dspcPosSigmaFrac = floatArg("--dspc-pos-sigma-frac", 0.25);
 const startedAt = new Date();
 const defaultOutDir = join(
   "runs",
@@ -407,6 +451,209 @@ function compactOldToolOutputBody(body, entry) {
   };
 }
 
+function dspcSplitSentences(text) {
+  const segments = [];
+  for (const rawLine of String(text).split(/\n/)) {
+    if (rawLine.trim() === "") continue;
+    const parts = /[.!?]\s/.test(rawLine) ? rawLine.split(/(?<=[.!?])\s+/) : [rawLine];
+    for (const part of parts) {
+      if (part.trim() !== "") segments.push(part);
+    }
+  }
+  return segments;
+}
+
+function dspcTokenize(text) {
+  return String(text).toLowerCase().match(/[a-z0-9_]+/g) || [];
+}
+
+function dspcMax(values) {
+  let max = 0;
+  for (const value of values) if (value > max) max = value;
+  return max;
+}
+
+// DSPC (arXiv:2509.13723) deterministic realization. Stage 1 is the paper's
+// TF-IDF semantic-sentence filter (eq. 1-5). Stage 2 ranks survivors by a
+// multi-signal score (eq. 10): attention contribution and cross-model loss are
+// approximated by lexical TF-IDF salience and IDF informativeness (Rho-1
+// intuition) because this path makes no model calls, while positional importance
+// (eq. 9) is computed exactly. The exact body stays recoverable downstream via
+// the body_sha256/record_sha256 in the marker, so the prompt-side loss is safe.
+function compactOldToolOutputBodyDSPC(body, entry) {
+  const text = String(body || "");
+  if (text.length <= toolOutputCompressMinChars) return { body: text, compressed: false };
+  const budget = Math.max(toolOutputCompressHeadChars + toolOutputCompressTailChars, 1);
+
+  const segments = dspcSplitSentences(text);
+  const N = segments.length;
+  if (N <= 1) return compactOldToolOutputBody(body, entry);
+  const segTokens = segments.map(dspcTokenize);
+
+  const df = new Map();
+  for (const toks of segTokens) {
+    for (const term of new Set(toks)) df.set(term, (df.get(term) || 0) + 1);
+  }
+  // Plain inverse document frequency (paper eq. 1: TF * log(N/DF)). No smoothing:
+  // a term in every segment scores 0 (uninformative), so repeated boilerplate is
+  // down-weighted instead of dominating via raw term frequency.
+  const idf = (term) => Math.log(N / (df.get(term) || 1));
+
+  const globalTf = new Map();
+  for (const toks of segTokens) {
+    for (const term of toks) globalTf.set(term, (globalTf.get(term) || 0) + 1);
+  }
+  const globalScore = new Map();
+  for (const [term, tf] of globalTf) globalScore.set(term, tf * idf(term));
+  const queryTerms = new Set(
+    [...globalScore.entries()]
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+      .slice(0, Math.min(12, globalScore.size))
+      .map(([term]) => term)
+  );
+
+  const stage1Score = segTokens.map((toks) => {
+    if (toks.length === 0) return 0;
+    let score = 0;
+    for (const term of toks) if (queryTerms.has(term)) score += idf(term);
+    return score / Math.sqrt(toks.length);
+  });
+  const keepStage1 = Math.max(1, Math.floor(dspcStage1Ratio * N));
+  const stage1Idx = segments
+    .map((_, i) => i)
+    .sort((a, b) => stage1Score[b] - stage1Score[a] || a - b)
+    .slice(0, keepStage1);
+
+  const sigma = Math.max(dspcPosSigmaFrac * N, 1);
+  const rawAttn = [];
+  const rawLoss = [];
+  const rawPos = [];
+  for (let i = 0; i < N; i += 1) {
+    const toks = segTokens[i];
+    const denom = toks.length || 1;
+    let salience = 0;
+    let informativeness = 0;
+    for (const term of toks) {
+      salience += globalScore.get(term) || 0;
+      informativeness += idf(term);
+    }
+    rawAttn.push(salience / denom);
+    rawLoss.push(informativeness / denom);
+    rawPos.push(1 + dspcPosLambda * Math.exp(-(((i - N / 2) ** 2) / (2 * sigma * sigma))));
+  }
+  const normalize = (arr) => {
+    const max = dspcMax(arr);
+    return max > 0 ? arr.map((x) => x / max) : arr.map(() => 0);
+  };
+  const nAttn = normalize(rawAttn);
+  const nLoss = normalize(rawLoss);
+  const alpha = segments.map(
+    (_, i) => dspcBetaAttn * nAttn[i] + dspcBetaLoss * nLoss[i] + dspcBetaPos * rawPos[i]
+  );
+
+  const ranked = stage1Idx.slice().sort((a, b) => alpha[b] - alpha[a] || a - b);
+  const selected = new Set();
+  let used = 0;
+  for (const i of ranked) {
+    const cost = segments[i].length + 1;
+    if (selected.size > 0 && used + cost > budget) continue;
+    selected.add(i);
+    used += cost;
+    if (used >= budget) break;
+  }
+
+  const keptOrdered = [...selected].sort((a, b) => a - b);
+  const pieces = [];
+  let prev = -1;
+  for (const i of keptOrdered) {
+    if (prev !== -1 && i > prev + 1) pieces.push("[...]");
+    pieces.push(segments[i]);
+    prev = i;
+  }
+  if (keptOrdered.length && keptOrdered[0] > 0) pieces.unshift("[...]");
+  if (keptOrdered.length && keptOrdered[keptOrdered.length - 1] < N - 1) pieces.push("[...]");
+  const kept = pieces.join("\n");
+  const omitted = Math.max(text.length - kept.length, 0);
+  const marker =
+    "[tool output compressed: strategy=dspc original_chars=" +
+    text.length +
+    " omitted_chars=" +
+    omitted +
+    " line=" +
+    entry.lineNumber +
+    " body_sha256=" +
+    sha256Text(text) +
+    " record_sha256=" +
+    entry.hash +
+    " stage1_kept=" +
+    keepStage1 +
+    "/" +
+    N +
+    " stage2_kept=" +
+    keptOrdered.length +
+    "]";
+  return {
+    body: [marker, "", kept].join("\n"),
+    compressed: true,
+    originalChars: text.length,
+    omittedChars: omitted,
+  };
+}
+
+function compactToolOutputBody(body, entry) {
+  if (toolOutputCompressStrategy === "dspc") return compactOldToolOutputBodyDSPC(body, entry);
+  return compactOldToolOutputBody(body, entry);
+}
+
+function escapeOntoBody(text) {
+  return String(text || "").replace(/^(\d{6}\|)/gm, " $1");
+}
+
+function ontoMetaField(value) {
+  return String(value == null ? "" : value).replace(/\s+/g, "_").replace(/\|/g, "/");
+}
+
+// ONTO columnar renderer (arXiv:2604.17512). The per-record metadata keys
+// (line|type|role|ts|chars) are declared once in the @@ONTO header; each record
+// is one pipe-delimited value row (empty fields render as ONTO null) followed by
+// its body, instead of repeating key= tokens on every record like the sentinel
+// and stripped renderers do. A record starts at any line matching ^\d{6}\| ; body
+// lines that would collide with that shape are space-escaped.
+function renderOntoRecord(entry, context) {
+  const linePadded = String(entry.lineNumber).padStart(6, "0");
+  let record;
+  try {
+    record = JSON.parse(entry.raw);
+  } catch {
+    const body = escapeOntoBody(entry.raw);
+    return linePadded + "|unparsed|||" + body.length + "\n" + body;
+  }
+  const type = ontoMetaField(record.type || "unknown");
+  const role = record.message?.role ? ontoMetaField(record.message.role) : "";
+  const ts = record.timestamp ? ontoMetaField(record.timestamp) : "";
+  let body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+  const oldToolOutput =
+    isToolOutputRecord(record) &&
+    toolOutputCompressAfter > 0 &&
+    entry.lineNumber <= context.recordCount - toolOutputCompressAfter;
+  if (oldToolOutput) {
+    const compacted = compactToolOutputBody(body, entry);
+    if (compacted.compressed) {
+      context.stats.compressedToolOutputRecords += 1;
+      context.stats.originalToolOutputChars += compacted.originalChars;
+      context.stats.omittedToolOutputChars += compacted.omittedChars;
+    }
+    body = compacted.body;
+  }
+  body = escapeOntoBody(body);
+  if (oldToolOutput) context.stats.renderedToolOutputChars += body.length;
+  return [linePadded, type, role, ts, String(body.length)].join("|") + "\n" + body;
+}
+
+function ontoHeader(recordCount) {
+  return "@@ONTO Transcript[" + recordCount + "] fields=line|type|role|ts|chars";
+}
+
 function renderStrippedRecord(entry) {
   let record;
   try {
@@ -449,7 +696,7 @@ function renderSentinelRecord(entry, context) {
   const oldToolOutput =
     isToolOutputRecord(record) && toolOutputCompressAfter > 0 && entry.lineNumber <= context.recordCount - toolOutputCompressAfter;
   if (oldToolOutput) {
-    const compacted = compactOldToolOutputBody(body, entry);
+    const compacted = compactToolOutputBody(body, entry);
     if (compacted.compressed) {
       context.stats.compressedToolOutputRecords += 1;
       context.stats.originalToolOutputChars += compacted.originalChars;
@@ -494,7 +741,7 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
       searchableText,
     };
   });
-  const wrappedTranscript =
+  const wrappedBody =
     entries
       .map((entry) => {
         const line = String(entry.lineNumber).padStart(6, "0");
@@ -502,9 +749,14 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
         if (renderer === "sentinel") {
           return renderSentinelRecord(entry, { recordCount: entries.length, stats: renderStats });
         }
+        if (renderer === "onto") {
+          return renderOntoRecord(entry, { recordCount: entries.length, stats: renderStats });
+        }
         return '<record line="' + line + '">' + entry.raw + "</record>";
       })
       .join("\n") + "\n";
+  const wrappedTranscript =
+    renderer === "onto" ? ontoHeader(entries.length) + "\n" + wrappedBody : wrappedBody;
   const tsv =
     "line\thash\tpreview\n" +
     entries
@@ -627,6 +879,7 @@ function renderEntryForStats(entry, renderer, context) {
   const line = String(entry.lineNumber).padStart(6, "0");
   if (renderer === "stripped") return renderStrippedRecord(entry);
   if (renderer === "sentinel") return renderSentinelRecord(entry, context);
+  if (renderer === "onto") return renderOntoRecord(entry, context);
   return '<record line="' + line + '">' + entry.raw + "</record>";
 }
 
@@ -731,11 +984,11 @@ function rendererStatsForTranscript(transcript, renderer) {
       hash: entry.hash.slice(0, 12),
       preview: entry.preview,
     });
-    if (renderer === "sentinel" && parsed && isToolOutputRecord(record)) {
+    if ((renderer === "sentinel" || renderer === "onto") && parsed && isToolOutputRecord(record)) {
       const body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
       const oldToolOutput =
         toolOutputCompressAfter > 0 && entry.lineNumber <= entries.length - toolOutputCompressAfter;
-      const compacted = oldToolOutput ? compactOldToolOutputBody(body, entry) : { compressed: false };
+      const compacted = oldToolOutput ? compactToolOutputBody(body, entry) : { compressed: false };
       if (compacted.compressed) {
         topOmitted.push({
           line: entry.lineNumber,
@@ -1404,13 +1657,21 @@ function rendererEvidenceInstructions(renderer) {
       "- Some older tool-output records may be body-compressed with an explicit sha256 marker; cite the record line when that compressed output matters, because the harness rehydrates exact content from the source JSONL.",
     ];
   }
+  if (renderer === "onto") {
+    return [
+      "- The transcript uses ONTO columnar framing: the first line '@@ONTO Transcript[N] fields=line|type|role|ts|chars' declares the per-record metadata keys once.",
+      "- Each record then starts with one pipe-delimited value row 'line|type|role|ts|chars' (empty fields are null), immediately followed by that record's body until the next row.",
+      "- Use the first pipe field (the zero-padded one-based logical JSONL record number) from each row for every source span.",
+      "- Some older tool-output records may be body-compressed with an explicit sha256 marker; cite the record line when that compressed output matters, because the harness rehydrates exact content from the source JSONL.",
+    ];
+  }
   return [
     '- The transcript is wrapped as <record line="000001">...</record>.',
     "- Use one-based logical JSONL record numbers from those wrappers for every source span.",
   ];
 }
 
-function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
+function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, adaptationLines }) {
   const customInstructionsBlock = customSummaryInstructions.trim()
     ? [
         "",
@@ -1494,6 +1755,12 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     "<transcript>",
     wrappedTranscript,
     "</transcript>",
+    ...(adaptationLines && adaptationLines.length
+      ? ["", "=== MODEL-SPECIFIC COMPLETENESS REQUIREMENTS (override earlier guidance) ===", ...adaptationLines]
+      : []),
+    ...(reaskFeedback && reaskFeedback.trim()
+      ? ["", "=== CORRECTION REQUIRED (your previous attempt was incomplete) ===", reaskFeedback.trim()]
+      : []),
   ].join("\n");
 }
 
@@ -3341,6 +3608,7 @@ async function buildHandoffManifest({
       endpoint: requestMeta.endpoint,
       renderer_policy: {
         transcript_renderer: stats.transcriptRenderer,
+        tool_output_compress_strategy: toolOutputCompressStrategy,
         tool_output_compress_after: toolOutputCompressAfter,
         tool_output_compress_min_chars: toolOutputCompressMinChars,
         tool_output_compress_head_chars: toolOutputCompressHeadChars,
@@ -3808,18 +4076,22 @@ async function main() {
     console.log(JSON.stringify({ ok: true, renderer_stats_report: reportPath }, null, 2));
     return;
   }
-  const promptText = buildFullTranscriptPrompt({
+  const promptAdaptation = buildPromptAdaptations({ provider: PROVIDER, model: MODEL });
+  let promptText = buildFullTranscriptPrompt({
     wrappedTranscript: lineHashArtifacts.wrappedTranscript,
     stats,
+    adaptationLines: ADAPT_PROMPT ? promptAdaptation.lines : [],
   });
   if (dumpPromptPath) await writeFile(resolve(dumpPromptPath), promptText);
-  const request = buildRequestBody(promptText, stats);
-  const bodyText = JSON.stringify(request.body);
+  let request = buildRequestBody(promptText, stats);
+  let bodyText = JSON.stringify(request.body);
   const endpoint = providerEndpoint();
+  const compressesToolOutput = transcriptRenderer === "sentinel" || transcriptRenderer === "onto";
   const requestMeta = {
     provider: PROVIDER,
     endpoint,
     model: MODEL,
+    ...(ADAPT_PROMPT ? { prompt_adaptations: promptAdaptation.applied } : {}),
     provider_schema_fingerprint: sha256Text(
       JSON.stringify(createProviderSummarySchema(stats.records))
     ),
@@ -3847,18 +4119,19 @@ async function main() {
     wrapped_transcript_estimated_tokens: Math.ceil(lineHashArtifacts.wrappedTranscript.length / 4),
     live_output: liveOutput,
     preserve_tail: preserveTailCount,
-    tool_output_compress_after: transcriptRenderer === "sentinel" ? toolOutputCompressAfter : null,
-    tool_output_compress_min_chars: transcriptRenderer === "sentinel" ? toolOutputCompressMinChars : null,
-    tool_output_compress_head_chars: transcriptRenderer === "sentinel" ? toolOutputCompressHeadChars : null,
-    tool_output_compress_tail_chars: transcriptRenderer === "sentinel" ? toolOutputCompressTailChars : null,
+    tool_output_compress_strategy: compressesToolOutput ? toolOutputCompressStrategy : null,
+    tool_output_compress_after: compressesToolOutput ? toolOutputCompressAfter : null,
+    tool_output_compress_min_chars: compressesToolOutput ? toolOutputCompressMinChars : null,
+    tool_output_compress_head_chars: compressesToolOutput ? toolOutputCompressHeadChars : null,
+    tool_output_compress_tail_chars: compressesToolOutput ? toolOutputCompressTailChars : null,
     tool_output_compressed_records:
-      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.compressedToolOutputRecords : null,
+      compressesToolOutput ? lineHashArtifacts.renderStats.compressedToolOutputRecords : null,
     tool_output_original_chars:
-      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.originalToolOutputChars : null,
+      compressesToolOutput ? lineHashArtifacts.renderStats.originalToolOutputChars : null,
     tool_output_rendered_chars:
-      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.renderedToolOutputChars : null,
+      compressesToolOutput ? lineHashArtifacts.renderStats.renderedToolOutputChars : null,
     tool_output_omitted_chars:
-      transcriptRenderer === "sentinel" ? lineHashArtifacts.renderStats.omittedToolOutputChars : null,
+      compressesToolOutput ? lineHashArtifacts.renderStats.omittedToolOutputChars : null,
     custom_summary_instructions: customSummaryInstructions.trim() || null,
     compact_and_prompt: compactAndPrompt.trim() || null,
     from_output: fromOutputPath ? resolve(fromOutputPath) : null,
@@ -3904,6 +4177,20 @@ async function main() {
   let events = [];
   let outputText = "";
   let loadedFromOutput = false;
+  let summary;
+  let reaskBest = null;
+  let reaskFeedback = "";
+  for (let reaskAttempt = 0; ; reaskAttempt++) {
+   if (reaskAttempt > 0) {
+     promptText = buildFullTranscriptPrompt({
+       wrappedTranscript: lineHashArtifacts.wrappedTranscript,
+       stats,
+       reaskFeedback,
+       adaptationLines: ADAPT_PROMPT ? promptAdaptation.lines : [],
+     });
+     request = buildRequestBody(promptText, stats);
+     bodyText = JSON.stringify(request.body);
+   }
   if (fromOutputPath) {
     loadedFromOutput = true;
     const sourceOutputPath = resolve(fromOutputPath);
@@ -4041,7 +4328,6 @@ async function main() {
     }
   }
 
-  let summary;
   try {
     summary = JSON.parse(outputText);
   } catch (error) {
@@ -4064,6 +4350,32 @@ async function main() {
     await writeFile(join(outDir, "failure.json"), JSON.stringify(failure, null, 2) + "\n");
     console.error(JSON.stringify(failure, null, 2));
     process.exit(1);
+  }
+
+  const reaskDensity =
+    loadedFromOutput || MAX_REASKS === 0
+      ? { pass: true, score: 1, shortfalls: [], feedback: "", metrics: {} }
+      : evaluateHandoffDensity(summary, DENSITY_THRESHOLDS);
+  if (!reaskBest || reaskDensity.score >= reaskBest.density.score) {
+    reaskBest = { summary, outputText, events, density: reaskDensity };
+  }
+  if (reaskDensity.pass || loadedFromOutput || reaskAttempt >= MAX_REASKS) break;
+  reaskFeedback = reaskDensity.feedback;
+  process.stderr.write(
+    "reask " +
+      (reaskAttempt + 1) +
+      "/" +
+      MAX_REASKS +
+      " (density " +
+      JSON.stringify(reaskDensity.metrics) +
+      "): re-requesting with corrective feedback\n"
+  );
+  }
+  summary = reaskBest.summary;
+  outputText = reaskBest.outputText;
+  events = reaskBest.events;
+  if (!loadedFromOutput && MAX_REASKS > 0) {
+    await writeFile(modelOutputPath, outputText + "\n");
   }
   const legacyModelUserMessagesDiscarded = Object.prototype.hasOwnProperty.call(
     summary,

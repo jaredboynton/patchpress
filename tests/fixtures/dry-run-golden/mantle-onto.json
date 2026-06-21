@@ -2,15 +2,15 @@
   "ok": true,
   "dry_run": true,
   "request": {
-    "provider": "wafer",
-    "endpoint": "https://pass.wafer.ai/v1/chat/completions",
-    "model": "GLM-5.2",
+    "provider": "mantle",
+    "endpoint": "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions",
+    "model": "xai.grok-4.3",
     "provider_schema_fingerprint": "9b53534c90a1798b26cb08734a86d17bc51ccd7f1434ffc6fecd010405f701d6",
     "local_validation_schema": "summary-local-validation.v1",
     "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
     "service_tier": null,
     "reasoning_effort": null,
-    "temperature": null,
+    "temperature": 0.4,
     "thinking_level": null,
     "thinking_config": null,
     "max_output_tokens": null,
@@ -19,13 +19,14 @@
     "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
     "transcript_bytes": 128761,
     "transcript_records": 16,
-    "transcript_renderer": "sentinel",
+    "transcript_renderer": "onto",
     "estimated_char_div_4_tokens": 32188,
-    "request_body_bytes": 134039,
-    "wrapped_transcript_bytes": 121159,
-    "wrapped_transcript_estimated_tokens": 30287,
+    "request_body_bytes": 133455,
+    "wrapped_transcript_bytes": 120348,
+    "wrapped_transcript_estimated_tokens": 30084,
     "live_output": true,
     "preserve_tail": 16,
+    "tool_output_compress_strategy": "headtail",
     "tool_output_compress_after": 64,
     "tool_output_compress_min_chars": 2400,
     "tool_output_compress_head_chars": 900,
@@ -46,7 +47,7 @@
   }
 }
 {
-  "url": "https://pass.wafer.ai/v1/chat/completions",
+  "url": "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions",
   "method": "POST",
   "headers": {
     "Authorization": "Bearer <redacted>",
@@ -54,7 +55,7 @@
     "Content-Type": "application/json"
   },
   "body": {
-    "model": "GLM-5.2",
+    "model": "xai.grok-4.3",
     "messages": [
       {
         "role": "system",
@@ -345,6 +346,7 @@
       "request_kind": "full_transcript_compaction",
       "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
       "transcript_records": "16"
-    }
+    },
+    "temperature": 0.4
   }
 }

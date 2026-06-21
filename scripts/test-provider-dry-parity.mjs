@@ -21,8 +21,8 @@ const fixtureDir = join(repoRoot, "tests", "fixtures", "dry-run-golden");
 const inputPath = process.env.DRY_PARITY_INPUT || "/tmp/e-reduced.jsonl";
 const update = process.argv.includes("--update");
 
-const PROVIDERS = ["codex", "gemini", "xai", "mantle", "wafer"];
-const RENDERERS = ["sentinel", "stripped"];
+const PROVIDERS = ["codex", "gemini", "xai", "mantle"];
+const RENDERERS = ["sentinel", "stripped", "onto"];
 
 // Normalize volatile fields so only request logic is compared.
 function normalize(text) {

@@ -28,6 +28,7 @@
     "wrapped_transcript_estimated_tokens": 30287,
     "live_output": true,
     "preserve_tail": 16,
+    "tool_output_compress_strategy": "headtail",
     "tool_output_compress_after": 64,
     "tool_output_compress_min_chars": 2400,
     "tool_output_compress_head_chars": 900,

@@ -4,7 +4,7 @@
 // The dry factor is the number of distinct code sites a developer must edit to
 // add one new compaction provider. It is computed by scanning a target file for
 // per-provider coupling: `PROVIDER === "<name>"` comparisons, per-provider
-// constant declarations (CODEX_/GEMINI_/XAI_/MANTLE_/WAFER_...), and the
+// constant declarations (CODEX_/GEMINI_/XAI_/MANTLE_...), and the
 // provider allowlist. Lower is better; a registry-driven design collapses the
 // repeated `if (PROVIDER === ...)` chains toward zero.
 //
@@ -23,8 +23,8 @@ const asJson = process.argv.includes("--json");
 
 // Known provider names. Extend if a provider is added; the detector reports
 // coupling for each so the count reflects reality rather than a fixed list.
-const PROVIDERS = ["codex", "gemini", "xai", "mantle", "wafer"];
-const CONST_PREFIXES = ["CODEX_", "GEMINI_", "XAI_", "MANTLE_", "WAFER_"];
+const PROVIDERS = ["codex", "gemini", "xai", "mantle"];
+const CONST_PREFIXES = ["CODEX_", "GEMINI_", "XAI_", "MANTLE_"];
 
 const lines = readFileSync(FILE, "utf8").split(/\r?\n/);
 

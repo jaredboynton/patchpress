@@ -12,6 +12,7 @@
     "min_user_intent_events": 8,
     "min_evidence_capsules": 50,
     "require_integrity_echo": true,
-    "require_manifest_hashes": true
+    "require_manifest_hashes": true,
+    "max_after_estimated_tokens": 23022
   }
 }

@@ -2,15 +2,15 @@
   "ok": true,
   "dry_run": true,
   "request": {
-    "provider": "codex",
-    "endpoint": "https://chatgpt.com/backend-api/codex/responses",
-    "model": "gpt-5.4",
+    "provider": "xai",
+    "endpoint": "https://api.x.ai/v1/chat/completions",
+    "model": "grok-4.20-0309-non-reasoning",
     "provider_schema_fingerprint": "9b53534c90a1798b26cb08734a86d17bc51ccd7f1434ffc6fecd010405f701d6",
     "local_validation_schema": "summary-local-validation.v1",
     "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
-    "service_tier": "priority",
-    "reasoning_effort": "low",
-    "temperature": null,
+    "service_tier": null,
+    "reasoning_effort": null,
+    "temperature": 0.4,
     "thinking_level": null,
     "thinking_config": null,
     "max_output_tokens": null,
@@ -19,22 +19,22 @@
     "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
     "transcript_bytes": 128761,
     "transcript_records": 16,
-    "transcript_renderer": "stripped",
+    "transcript_renderer": "onto",
     "estimated_char_div_4_tokens": 32188,
-    "request_body_bytes": 133918,
-    "wrapped_transcript_bytes": 120864,
-    "wrapped_transcript_estimated_tokens": 30213,
+    "request_body_bytes": 133471,
+    "wrapped_transcript_bytes": 120348,
+    "wrapped_transcript_estimated_tokens": 30084,
     "live_output": true,
     "preserve_tail": 16,
-    "tool_output_compress_strategy": null,
-    "tool_output_compress_after": null,
-    "tool_output_compress_min_chars": null,
-    "tool_output_compress_head_chars": null,
-    "tool_output_compress_tail_chars": null,
-    "tool_output_compressed_records": null,
-    "tool_output_original_chars": null,
-    "tool_output_rendered_chars": null,
-    "tool_output_omitted_chars": null,
+    "tool_output_compress_strategy": "headtail",
+    "tool_output_compress_after": 64,
+    "tool_output_compress_min_chars": 2400,
+    "tool_output_compress_head_chars": 900,
+    "tool_output_compress_tail_chars": 500,
+    "tool_output_compressed_records": 0,
+    "tool_output_original_chars": 0,
+    "tool_output_rendered_chars": 0,
+    "tool_output_omitted_chars": 0,
     "custom_summary_instructions": null,
     "compact_and_prompt": null,
     "from_output": null,
@@ -47,54 +47,35 @@
   }
 }
 {
-  "url": "https://chatgpt.com/backend-api/codex/responses",
+  "url": "https://api.x.ai/v1/chat/completions",
   "method": "POST",
   "headers": {
     "Authorization": "Bearer <redacted>",
-    "ChatGPT-Account-Id": "<redacted>",
-    "originator": "codex_cli_rs",
-    "User-Agent": "codex_cli_rs/0.142.0-alpha.9 (Mac OS 15.7.3; arm64) reqwest/0.12.28",
     "Accept": "text/event-stream",
-    "Content-Type": "application/json",
-    "session-id":"<v>",
-    "thread-id":"<v>",
-    "x-client-request-id":"<v>",
-    "x-codex-installation-id":"<v>",
-    "x-codex-window-id":"<v>"
+    "Content-Type": "application/json"
   },
   "body": {
-    "model": "gpt-5.4",
-    "instructions": "You are a transcript compaction engine. Output only strict JSON matching the requested schema.",
-    "input": [
+    "model": "grok-4.20-0309-non-reasoning",
+    "messages": [
       {
-        "type": "message",
+        "role": "system",
+        "content": "You are a transcript compaction engine. Output only strict JSON matching the requested schema."
+      },
+      {
         "role": "user",
-        "content": [
-          {
-            "type": "input_text",
-            "text": "<full transcript omitted from redacted request; see before transcript artifact> {\"inputPath\":\"/tmp/e-reduced.jsonl\",\"sha256\":\"44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc\",\"bytes\":128761,\"records\":16,\"approxTokens\":32188}"
-          }
-        ]
+        "content": "<full transcript omitted from redacted request; see before transcript artifact> {\"inputPath\":\"/tmp/e-reduced.jsonl\",\"sha256\":\"44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc\",\"bytes\":128761,\"records\":16,\"approxTokens\":32188}"
       }
     ],
-    "tools": [],
-    "tool_choice": "auto",
-    "parallel_tool_calls": false,
-    "reasoning": {
-      "effort": "low"
-    },
-    "store": false,
     "stream": true,
-    "include": [
-      "reasoning.encrypted_content"
-    ],
-    "service_tier": "priority",
-    "prompt_cache_key": "claudecompact-full-44db274b84829f8e21e4492abb9dbbf5",
-    "text": {
-      "format": {
-        "type": "json_schema",
-        "strict": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
         "name": "claude_full_transcript_compaction",
+        "description": "Produce an evidence-grounded Claude Code transcript continuation handoff.",
+        "strict": true,
         "schema": {
           "type": "object",
           "additionalProperties": false,
@@ -360,15 +341,12 @@
         }
       }
     },
-    "client_metadata": {
-      "x-codex-installation-id":"<v>",
-      "x-codex-window-id":"<v>",
-      "session_id": "<uuid>",
-      "thread_id": "<uuid>",
+    "metadata": {
       "codex_harness": "claudecompact-patcher",
       "request_kind": "full_transcript_compaction",
       "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
       "transcript_records": "16"
-    }
+    },
+    "temperature": 0.4
   }
 }

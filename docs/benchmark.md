@@ -8,8 +8,6 @@ deterministic gate and the v3 semantic judge; see `docs/judging-and-scoring.md`.
 
 All five scored models compact the 595k-token transcript successfully. The
 two-layer score separates them on quality, and wall time separates them on speed.
-A sixth provider, Wafer `GLM-5.2`, is wired but not yet benchmarked (see note
-below).
 
 - **Best quality:** `gpt-5.4` (codex) — top deterministic score and a clean
   10/10 judge on both renderers, at the cost of latency (~32-40s).
@@ -27,12 +25,14 @@ below).
   temperature 0.4: sentinel 81 deterministic / 10 judge-pass; stripped 86 / 9
   judge-pass). `--reasoning-effort medium` lifts it over the gate (~85); at the
   default it stays borderline. Not recommended over the direct providers above.
-- **Wafer `GLM-5.2` (wired, benchmark pending):** the provider is integrated and
-  verified end-to-end on a small input (7,439-char summary). On the 595k
-  transcript the `pass.wafer.ai` endpoint returned transient `ttfb_gate_shed`
-  capacity errors: the stripped run completed once (16,495 chars, ~45s) but was
-  not scored or judged, and sentinel did not complete. Deterministic and judge
-  scores are pending a retry when the provider has capacity.
+- **`onto` renderer + `dspc` strategy (wired, benchmark pending):** a third
+  transcript renderer `--transcript-renderer onto` (schema-once columnar framing,
+  arXiv:2604.17512) and an importance-based tool-output compressor
+  `--tool-output-compress-strategy dspc` (arXiv:2509.13723) are integrated and
+  covered by `test-onto-renderer.mjs` / `test-dspc-compression.mjs` and the
+  12-combination provider parity gate. The 595k benchmark rows for `onto` and for
+  the `dspc` strategy are pending; the defaults (`stripped` / `headtail`) are
+  unchanged so existing rows still hold.
 
 ## Benchmark Conditions
 
@@ -79,6 +79,60 @@ the run; the earlier `summary_blocks[i].body must be a single bullet item` retry
 is gone (regression test: `scripts/test-bullet-normalization.mjs`). `grok-4.3`
 clears the deterministic gate with `--reasoning-effort medium` (~85); at the
 default with no reasoning it stays borderline (81-84).
+
+## Forcing completeness: density-gated reask
+
+The two single-shot lanes that fail the deterministic gate fail on recall
+density, not prose (judge 10/10): thin evidence capsules, few cited lines, and
+dropped required literals. `--max-reasks N` (default 0, opt-in) closes this with
+a post-parse validate-and-reask loop: after each attempt it scores handoff
+density (`scripts/handoff-density.mjs`), and on a shortfall re-requests the
+provider with specific corrective feedback up to N times, keeping the densest
+attempt. It enforces density after parsing rather than via schema `minItems`,
+which AWS Bedrock rejects with a 400 and Gemini Flash-Lite ignores at decode time
+(see `docs/prompt-adaptation/design.md`, prior art Instructor / Guardrails /
+oh-my-openagent). With `--max-reasks 2` both failing lanes clear the gate and
+recover every missing literal:
+
+| Lane | Single-shot | `--max-reasks 2` | Capsules | Missing literals |
+|---|---|---|---:|---|
+| `xai.grok-4.3` (Mantle) sentinel | 81 **fail** | **92 pass** | 9 -> 40 | 1 -> 0 |
+| `gemini-3.1-flash-lite` stripped | 79 **fail** | **91 pass** | 17 -> 29 | 2 -> 0 |
+
+Default `--max-reasks 0` leaves the request byte-identical (the provider dry-run
+parity gate still passes); only lanes that fall short pay for reasks. Regression
+test: `scripts/test-reask-loop.mjs`. Run artifacts:
+`runs/bench-mantle-sentinel-reask`, `runs/bench-g31lite-stripped-reask`.
+
+## Forcing completeness: dynamic per-provider/model prompt mutation
+
+A second, complementary lever shapes the FIRST request instead of correcting a
+thin one. `--adapt-prompt` (default off) appends model-specific completeness
+augmentations chosen by provider/model traits
+(`scripts/prompt-adaptation.mjs`), matching documented best practices: the same
+model-gated prompt selection oh-my-openagent (`createMetisAgent`) and openclaw
+(`GPT5_BEHAVIOR_CONTRACT`) use. grok-4.3 on Bedrock gets a prompt-side count
+floor (Bedrock rejects schema `minItems>1`) plus xAI "mine the transcript" and
+literal-preservation directives; flash-lite gets non-reasoning decomposition plus
+a Gemini concision-counter; strong models (codex, gemini-flash) get nothing and
+stay byte-identical. Cited evidence: `docs/prompt-adaptation/provider-prompting.md`
+(10-agent workflow, 30 findings).
+
+The two levers stack. Measured on grok-4.3 sentinel (single-shot baseline 81/9
+capsules):
+
+| Config | Deterministic | Capsules | Missing literals |
+|---|---|---:|---|
+| single-shot | 81 **fail** | 9 | 1 |
+| `--adapt-prompt` only | 82 fail | 25 | 2 |
+| `--max-reasks 2` only | 92 pass | 40 | 0 |
+| `--adapt-prompt --max-reasks 2` | **93 pass** | 41 | 0 |
+
+Prompt mutation alone roughly triples evidence density (9 -> 25 capsules, 7 -> 23
+cited lines) but does not clear the gate for the weakest model; the reask loop
+closes the gap, and the two together score highest. Regression test:
+`scripts/test-prompt-adaptation.mjs`. Run artifacts: `runs/bench-*-adapt`,
+`runs/bench-mantle-sentinel-adapt-reask`.
 
 ## Reading the two scores
 
