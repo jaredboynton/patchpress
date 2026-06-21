@@ -121,10 +121,9 @@ export function buildReaskFeedback(shortfalls) {
     "already captured and add the missing detail. Every summary_blocks, rule, plan,",
     "and promise item must cite one or more exact source_spans. Do not shorten.",
     "",
-    "Shape target (match gpt-5.5-quality handoffs): 8-10 named summary_blocks split",
-    "by domain (state, intent, artifacts, pending work, transport, endpoints, models,",
-    "tooling); 2-4 source_spans per block across different line ranges; verbatim paths,",
-    "protocol strings, RPC names, and version numbers in every block body; populate",
-    "rules_and_invariants, plans_and_task_state, and promises_made with cited spans.",
+    "Shape target: 8-10 named summary_blocks split by domain (state, intent, artifacts, pending",
+    "work, transport, endpoints, models, tooling); 2-4 source_spans per block across different",
+    "line ranges; verbatim paths, protocol strings, RPC names, and version numbers in every block",
+    "body; populate rules_and_invariants, plans_and_task_state, and promises_made with cited spans.",
   ].join("\n");
 }

@@ -75,22 +75,20 @@ export function buildPromptAdaptations({ provider, model }) {
 // ---------------------------------------------------------------------------
 // Cited registry (docs/prompt-adaptation/provider-prompting.md). Adaptations are
 // emitted in registry order. The cross-cutting block targets weak models; strong
-// instruction-followers (codex, gemini-flash) get nothing and stay byte-identical.
+// instruction-followers (codex only) get nothing and stay byte-identical.
 // ---------------------------------------------------------------------------
 
-// Cross-cutting: codex-grade sectional shape (pattern from gpt-5.5 benchmark handoffs).
-// Weak models collapse into 2-3 mega-blocks; dense handoffs use 8-10 named sections
-// with multi-span anchoring and literal enumeration per domain.
+// Cross-cutting: dense sectional shape. Weak models collapse into 2-3 mega-blocks;
+// strong handoffs use 8-10 named sections with multi-span anchoring per domain.
 adapt({
   id: "sectional-handoff-shape",
   applies: (t) => t.isWeak,
   lines: [
-    "Handoff shape (match dense codex-quality output): emit at least 8 summary_blocks as",
-    "named thematic sections -- e.g. current state; current user intent/constraints;",
-    "active artifacts (every path listed); unresolved/pending work; then split domain",
-    "findings into separate blocks (tooling/skill status, binary/static analysis, transport/",
-    "capture, endpoints/payloads, model registry, research decisions). Do NOT merge those",
-    "domains into one paragraph.",
+    "Handoff shape: emit at least 8 summary_blocks as named thematic sections -- e.g. current",
+    "state; current user intent/constraints; active artifacts (every path listed); unresolved/",
+    "pending work; then split domain findings into separate blocks (tooling/skill status,",
+    "binary/static analysis, transport/capture, endpoints/payloads, model registry, research",
+    "decisions). Do NOT merge those domains into one paragraph.",
     "Each block: one dense paragraph naming exact file paths, protocol strings (e.g.",
     "application/proto, HTTPS_PROXY), RPC/service names, version numbers, cache paths, and",
     "numeric facts; attach 2-4 distinct source_spans across different transcript line ranges.",
@@ -168,7 +166,7 @@ adapt({
   id: "nonreasoning-decompose",
   applies: (t) => t.isNonReasoning,
   lines: [
-    "You are a non-reasoning extractor with no scratchpad: do not decide what is important.",
+    "Treat this as mechanical extraction with no scratchpad: do not decide what is important.",
     "Mechanically transcribe in order, in four passes you MUST all complete: (1) every decision +",
     "the line that records it; (2) every open/unfinished task + its triggering line; (3) every",
     "file path, command, and config value touched + its line; (4) every explicit 'I will' / next-step",
@@ -177,28 +175,27 @@ adapt({
   ],
 });
 
-// Gemini 3.5 Flash: strong but defaults to moderate depth; steer toward codex-grade sections.
+// Flash-tier Gemini: steer toward sectional depth over default brevity.
 adapt({
-  id: "gemini-35-flash-sectional",
+  id: "flash-sectional-depth",
   applies: (t) => t.isGemini35Flash,
   lines: [
-    "gemini-3.5-flash: your default is balanced prose -- here prioritize DEPTH over brevity.",
-    "Target 8-10 summary_blocks minimum, each with multiple source_spans and verbatim literals.",
-    "Split transport, endpoints, and model-discovery into separate blocks; include every doc/",
-    "proto/script path under the active artifact tree and every RPC name captured in the session.",
+    "Prioritize DEPTH over brevity. Target 8-10 summary_blocks minimum, each with multiple",
+    "source_spans and verbatim literals. Split transport, endpoints, and model-discovery into",
+    "separate blocks; include every doc/proto/script path under the active artifact tree and",
+    "every RPC name captured in the session.",
   ],
 });
 
-// Gemini Flash-Lite: steer against the concision default; enumerate before output.
-// Cite: ai.google.dev gemini-3, thinking, structured-output.
+// Flash-Lite / concision-biased variants: enumerate before output.
 adapt({
   id: "gemini-density-steer",
   applies: (t) => t.isGemini && !t.isStrong,
   lines: [
-    "Gemini defaults to concision; here be concise in prose but EXHAUSTIVE in coverage. Before",
-    "emitting JSON, internally enumerate every distinct decision, commitment, file path, and code",
-    "change in the transcript; do not begin output until that internal list is exhausted. Aim for",
-    "at least three verbatim source_spans per major section; a single-span section means you missed",
-    "entries -- re-scan that span before finalizing.",
+    "Default to concision in prose but EXHAUSTIVE in coverage. Before emitting JSON, internally",
+    "enumerate every distinct decision, commitment, file path, and code change in the transcript;",
+    "do not begin output until that internal list is exhausted. Aim for at least three verbatim",
+    "source_spans per major section; a single-span section means you missed entries -- re-scan",
+    "that span before finalizing.",
   ],
 });

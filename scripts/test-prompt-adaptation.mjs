@@ -53,7 +53,7 @@ function expect(label, got, mustInclude, mustExclude) {
 }
 expect("codex/gpt-5.4 (strong: none)", applied("codex", "gpt-5.4"), [], ["enumerate-not-summarize", "bedrock-count-floor"]);
 expect("gemini-3.5-flash (sectional)", applied("gemini", "gemini-3.5-flash"),
-  ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "gemini-35-flash-sectional"],
+  ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "flash-sectional-depth"],
   ["bedrock-count-floor", "nonreasoning-decompose", "xai-mine-transcript"]);
 expect("mantle/grok-4.3", applied("mantle", "xai.grok-4.3"),
   ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "bedrock-count-floor", "xai-mine-transcript"], ["gemini-density-steer"]);

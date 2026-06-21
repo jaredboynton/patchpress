@@ -20,19 +20,21 @@ two-layer score separates them on quality, and wall time separates them on speed
   86/100 deterministic and 9/10 judge, both passing. The stripped lane hits a
   perfect 10/10 judge but drops below the deterministic gate (79/100), so the
   fast lane must use sentinel under the tuned defaults.
-- **Weakest:** Bedrock Mantle `xai.grok-4.3` — borderline and unstable. It
-  straddles the deterministic gate and flips pass/fail across runs (this run, at
-  temperature 0.4: sentinel 81 deterministic / 10 judge-pass; stripped 86 / 9
-  judge-pass). `--reasoning-effort medium` lifts it over the gate (~85); at the
-  default it stays borderline. Not recommended over the direct providers above.
+- **Weakest (single-shot):** Bedrock Mantle `xai.grok-4.3` — borderline on sentinel
+  (81 deterministic / 10 judge). With `--reask-until-pass` density clears and scores
+  reach 90/100, but three lanes still hard-fail on one missing fixture path literal.
+  Not recommended over direct providers unless quality-forcing is enabled.
 - **`onto` renderer (arXiv:2604.17512):** schema-once row-major framing cuts
   provider input tokens ~10-28% vs sentinel/stripped (e.g. codex 118k vs 131k/159k)
-  with comparable or better quality on most lanes. `gpt-5.4`/`gpt-5.5` hit 94/100
-  deterministic and 9-10/10 judge; `gemini-3.5-flash` 90/10; `grok-4.20` 87/9.
-  Flash-lite onto fails deterministic (78/100) like stripped; Mantle onto clears
-  the gate (86/100) unlike sentinel (81). **`dspc` strategy** (arXiv:2509.13723)
-  remains wired but not benchmarked on the 595k transcript; defaults stay
-  `stripped` / `headtail`.
+  with comparable or better quality on most lanes. Quality-forced `grok-4.20` onto
+  hits 94/100; flash-lite stripped hits 94/100 (fixes single-shot 79 fail).
+  **`dspc` strategy** (arXiv:2509.13723) remains wired but not benchmarked on the
+  595k transcript; defaults stay `stripped` / `headtail`.
+- **Quality-forcing (`--reask-until-pass`):** sectional prompt adaptations +
+  density-gated retry until pass (auto `--adapt-prompt` on non-codex). Fixes
+  flash-lite stripped (79 -> 94) and lifts grok-4.20 onto (87 -> 94). Remaining
+  gap: one required file-path literal (`docs/03-endpoints.md`) on three until-pass
+  lanes; flash-lite onto still misses density (37/40 capsules after 15 reasks).
 
 ## Benchmark Conditions
 
@@ -141,9 +143,31 @@ recover every missing literal:
 | `gemini-3.1-flash-lite` stripped | 79 **fail** | **91 pass** | 17 -> 29 | 2 -> 0 |
 
 Default `--max-reasks 0` leaves the request byte-identical (the provider dry-run
-parity gate still passes); only lanes that fall short pay for reasks. Regression
-test: `scripts/test-reask-loop.mjs`. Run artifacts:
+parity gate still passes); only lanes that fall short pay for reasks. Use
+`--reask-until-pass` (cap 10, auto `--adapt-prompt` on non-codex) to loop until
+the density gate clears and **exit 1** if it does not. Regression test:
+`scripts/test-reask-loop.mjs`. Run artifacts:
 `runs/bench-mantle-sentinel-reask`, `runs/bench-g31lite-stripped-reask`.
+
+### Quality-forced benchmark (`--reask-until-pass`, 2026-06-21)
+
+Sectional prompt adaptations + density-gated retry until pass (auto
+`--adapt-prompt` on non-codex). Artifacts: `runs/bench-*-until-pass`.
+
+| Model | Renderer | Wall | Deterministic /100 | Judge /10 | Input tok | Summary tok | After tok | Rules/Plans/Promises | Capsules | Cited lines |
+|---|---|---:|---|---|---:|---:|---:|---|---:|---:|
+| `gemini-3.5-flash` | onto | 35.5s | 90 **fail** | 9 pass | 143,508 | 2,806 | 26,110 | 5 / 9 / 2 | 65 | 165 |
+| `grok-4.20` (xAI) | onto | 26.3s | 94 pass | 9 pass | 116,132 | 3,528 | 26,961 | 7 / 6 / 1 | 65 | 286 |
+| `xai.grok-4.3` (Mantle) | onto | 32.2s | 90 **fail** | 10 pass | 116,651 | 2,177 | 25,244 | 9 / 9 / 1 | 62 | 73 |
+| `gemini-3.1-flash-lite` | stripped | 28.7s | 94 pass | 10 pass | 188,369 | 915 | 24,325 | 4 / 5 / 1 | 50 | 111 |
+| `xai.grok-4.3` (Mantle) | sentinel | 30.1s | 90 **fail** | 10 pass | 128,538 | 1,998 | 25,088 | 5 / 7 / 1 | 70 | 45 |
+
+Three **fail** rows hit 90/100 but hard-fail on one missing fixture literal
+(`/Users/jaredboynton/__devlocal/devin-decompile/docs/03-endpoints.md`) despite
+50-70 capsules. `grok-4.20` onto and flash-lite stripped both **pass** (94/100);
+flash-lite stripped fixes the single-shot 79 fail. Flash-lite **onto** still
+does not clear density after 15 reasks (37/40 capsules) -- use stripped or
+sentinel for flash-lite under quality-forcing.
 
 ## Forcing completeness: dynamic per-provider/model prompt mutation
 
@@ -154,9 +178,9 @@ augmentations chosen by provider/model traits
 model-gated prompt selection oh-my-openagent (`createMetisAgent`) and openclaw
 (`GPT5_BEHAVIOR_CONTRACT`) use. grok-4.3 on Bedrock gets a prompt-side count
 floor (Bedrock rejects schema `minItems>1`) plus xAI "mine the transcript" and
-literal-preservation directives; flash-lite gets non-reasoning decomposition plus
-a Gemini concision-counter; strong models (codex, gemini-flash) get nothing and
-stay byte-identical. Cited evidence: `docs/prompt-adaptation/provider-prompting.md`
+literal-preservation directives; flash-lite gets mechanical decomposition plus
+a concision counter; flash-tier Gemini gets sectional depth steering; codex-only
+models get nothing and stay byte-identical under `--adapt-prompt`. Cited evidence: `docs/prompt-adaptation/provider-prompting.md`
 (10-agent workflow, 30 findings).
 
 The two levers stack. Measured on grok-4.3 sentinel (single-shot baseline 81/9
@@ -196,16 +220,18 @@ closes the gap, and the two together score highest. Regression test:
 2. **Highest quality:** `gpt-5.4` (codex, either renderer) — top deterministic
    and 10/10 judge, when ~32-40s latency is acceptable.
 3. **Fast lane:** `gemini-3.1-flash-lite` with the **sentinel** renderer
-   (temperature 0.4, thinking `minimal`) — ~3.4s, 86/100 deterministic and 9/10
-   judge, both passing. Do not pair flash-lite with stripped under the tuned
-   defaults: that lane fails the deterministic gate (79/100) despite a 10/10
-   judge.
-4. **Cross-provider alternate:** `grok-4.20` (xAI direct) — ~12-14s, 9-10/10
-   judge.
+   (temperature 0.4, thinking `minimal`) — ~3.4s single-shot, 86/100 deterministic
+   and 9/10 judge. Single-shot **stripped** fails deterministic (79/100); add
+   `--reask-until-pass` on stripped to reach 94/100 (~29s). Do not use flash-lite
+   **onto** under quality-forcing (density cap miss).
+4. **Cross-provider alternate:** `grok-4.20` (xAI direct) — ~12-14s single-shot,
+   9-10/10 judge; **onto + `--reask-until-pass`** reaches 94/100 (~26s).
 5. **Lowest input tokens:** `onto` renderer on codex or xAI/Mantle — ~118k input
-   tokens vs ~131k (sentinel) or ~155-159k (stripped), with quality comparable to
-   sentinel on codex (94/100, 9-10/10 judge). Not recommended for flash-lite
-   (deterministic fail) or when maximum cited-line recall is required.
+   tokens vs ~131k (sentinel) or ~155-159k (stripped). Quality-forced grok-4.20
+   onto is the best token/quality trade on xAI.
+6. **Weak-model quality-forcing:** add `--reask-until-pass` (auto `--adapt-prompt`
+   on non-codex). Clears density on all tested lanes; pair with stripped/sentinel
+   for flash-lite. Literal recovery for `docs/03-endpoints.md` still pending.
 
 Bedrock Mantle (`xai.grok-4.3`) is runnable but not recommended: its handoffs are
 the thinnest of the field and its sentinel lane fails both layers.
@@ -234,13 +260,21 @@ Each lane writes `runs/bench-<lane>/result.json` (compaction) and
 `codex55-stripped`, `codex55-onto`, `g35flash-sentinel`, `g35flash-stripped`,
 `gemini35flash-onto`, `xai-sentinel`, `xai-stripped`, `grok420-onto`,
 `g31lite-t04-min-sentinel`, `g31lite-t04-min-stripped`, `gemini-flashlite-onto`,
-`mantle-sentinel`, `mantle-stripped`, `grok43-onto`. Deterministic scores are reproduced with
+`mantle-sentinel`, `mantle-stripped`, `grok43-onto`, `g35flash-onto-until-pass`,
+`grok420-onto-until-pass`, `grok43-onto-until-pass`, `g31lite-stripped-until-pass`,
+`mantle-sentinel-until-pass`. Deterministic scores are reproduced with
 `node scripts/score-compaction-result.mjs runs/bench-<lane>`.
 
 ## Reproduce
 
 ```sh
-# one lane (gemini-3.5-flash, stripped)
+# quality-forced weak model (flash-lite stripped)
+node scripts/compact-full-transcript.mjs --provider gemini --model gemini-3.1-flash-lite \
+  --transcript-renderer stripped --reask-until-pass \
+  --input transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl \
+  --out-dir runs/bench-g31lite-stripped-until-pass
+
+# one lane (gemini-3.5-flash, stripped, single-shot)
 node scripts/compact-full-transcript.mjs --provider gemini --model gemini-3.5-flash \
   --transcript-renderer stripped \
   --input transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl \
