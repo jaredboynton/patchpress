@@ -1,0 +1,373 @@
+{
+  "ok": true,
+  "dry_run": true,
+  "request": {
+    "provider": "codex",
+    "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+    "model": "gpt-5.4",
+    "provider_schema_fingerprint": "9b53534c90a1798b26cb08734a86d17bc51ccd7f1434ffc6fecd010405f701d6",
+    "local_validation_schema": "summary-local-validation.v1",
+    "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
+    "service_tier": "priority",
+    "reasoning_effort": "low",
+    "temperature": null,
+    "thinking_level": null,
+    "thinking_config": null,
+    "max_output_tokens": null,
+    "inputPath": "/tmp/e-reduced.jsonl",
+    "outDir": "/tmp/fixed-dry",
+    "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
+    "transcript_bytes": 128761,
+    "transcript_records": 16,
+    "transcript_renderer": "sentinel",
+    "estimated_char_div_4_tokens": 32188,
+    "request_body_bytes": 134405,
+    "wrapped_transcript_bytes": 121159,
+    "wrapped_transcript_estimated_tokens": 30287,
+    "live_output": true,
+    "preserve_tail": 16,
+    "tool_output_compress_after": 64,
+    "tool_output_compress_min_chars": 2400,
+    "tool_output_compress_head_chars": 900,
+    "tool_output_compress_tail_chars": 500,
+    "tool_output_compressed_records": 0,
+    "tool_output_original_chars": 0,
+    "tool_output_rendered_chars": 0,
+    "tool_output_omitted_chars": 0,
+    "custom_summary_instructions": null,
+    "compact_and_prompt": null,
+    "from_output": null,
+    "user_message_collapse_at": 2400,
+    "user_message_head_chars": 900,
+    "user_message_tail_chars": 900,
+    "handoff_user_message_limit": 64,
+    "handoff_user_message_token_budget": 8000,
+    "handoff_user_message_line_limit": 300
+  }
+}
+{
+  "url": "https://chatgpt.com/backend-api/codex/responses",
+  "method": "POST",
+  "headers": {
+    "Authorization": "Bearer <redacted>",
+    "ChatGPT-Account-Id": "<redacted>",
+    "originator": "codex_cli_rs",
+    "User-Agent": "codex_cli_rs/0.142.0-alpha.9 (Mac OS 15.7.3; arm64) reqwest/0.12.28",
+    "Accept": "text/event-stream",
+    "Content-Type": "application/json",
+    "session-id":"<v>",
+    "thread-id":"<v>",
+    "x-client-request-id":"<v>",
+    "x-codex-installation-id":"<v>",
+    "x-codex-window-id":"<v>"
+  },
+  "body": {
+    "model": "gpt-5.4",
+    "instructions": "You are a transcript compaction engine. Output only strict JSON matching the requested schema.",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<full transcript omitted from redacted request; see before transcript artifact> {\"inputPath\":\"/tmp/e-reduced.jsonl\",\"sha256\":\"44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc\",\"bytes\":128761,\"records\":16,\"approxTokens\":32188}"
+          }
+        ]
+      }
+    ],
+    "tools": [],
+    "tool_choice": "auto",
+    "parallel_tool_calls": false,
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false,
+    "stream": true,
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "service_tier": "priority",
+    "prompt_cache_key": "claudecompact-full-44db274b84829f8e21e4492abb9dbbf5",
+    "text": {
+      "format": {
+        "type": "json_schema",
+        "strict": true,
+        "name": "claude_full_transcript_compaction",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "summary_blocks",
+            "rules_and_invariants",
+            "plans_and_task_state",
+            "current_work",
+            "optional_next_step",
+            "promises_made",
+            "source_integrity"
+          ],
+          "properties": {
+            "summary_blocks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "section",
+                  "format",
+                  "body",
+                  "source_spans"
+                ],
+                "properties": {
+                  "section": {
+                    "type": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "paragraph",
+                      "bullet"
+                    ]
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Rendered summary content for this block. Bullet bodies must be a single item without a leading bullet marker."
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "rules_and_invariants": {
+              "type": "array",
+              "description": "Durable live instructions and constraints that should govern future work after compaction. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain what the next agent may do. Exclude ordinary completed tasks, transient exploration notes, historical user messages, rejected ideas, and old instructions that were later superseded or removed.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "rule",
+                  "status",
+                  "source_spans"
+                ],
+                "properties": {
+                  "rule": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "current",
+                      "superseded",
+                      "removed"
+                    ],
+                    "description": "Only current rules should be treated as live instructions after compaction. Use superseded or removed when later transcript state invalidates the rule."
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "plans_and_task_state": {
+              "type": "array",
+              "description": "Work-state ledger for the task, not a rule list. Include active or pending tasks, completed milestones that matter for continuation, benchmark state, open artifacts, open questions, blockers, and concrete next actions. Order active and pending work by priority. Exclude durable behavioral constraints that belong in rules_and_invariants and explicit assistant commitments that belong in promises_made.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "item",
+                  "status",
+                  "source_spans"
+                ],
+                "properties": {
+                  "item": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "active",
+                      "pending",
+                      "blocked",
+                      "superseded"
+                    ]
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "promises_made": {
+              "type": "array",
+              "description": "Explicit assistant commitments to the user that should survive compaction. Include promises such as 'I will run X', 'I will send Y', 'I will update/commit/push Z', or equivalent accepted commitments where the user will reasonably expect follow-through or proof. Do not infer promises from a user request alone. Exclude ordinary plans, inferred next steps, and completed work unless its promised proof/status must remain visible.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "promise",
+                  "status",
+                  "source_spans"
+                ],
+                "properties": {
+                  "promise": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "active",
+                      "pending",
+                      "blocked",
+                      "superseded",
+                      "removed"
+                    ]
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based logical JSONL record number from the <record line=...> wrapper.",
+                          "minimum": 1,
+                          "maximum": 16
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "current_work": {
+              "type": "string"
+            },
+            "optional_next_step": {
+              "type": "string"
+            },
+            "source_integrity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "transcript_sha256",
+                "transcript_lines_seen",
+                "verbatim_span_grounded",
+                "limitations"
+              ],
+              "properties": {
+                "transcript_sha256": {
+                  "type": "string"
+                },
+                "transcript_lines_seen": {
+                  "type": "integer"
+                },
+                "verbatim_span_grounded": {
+                  "type": "boolean"
+                },
+                "limitations": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "client_metadata": {
+      "x-codex-installation-id":"<v>",
+      "x-codex-window-id":"<v>",
+      "session_id": "<uuid>",
+      "thread_id": "<uuid>",
+      "codex_harness": "claudecompact-patcher",
+      "request_kind": "full_transcript_compaction",
+      "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
+      "transcript_records": "16"
+    }
+  }
+}
