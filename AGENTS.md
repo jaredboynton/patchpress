@@ -8,6 +8,7 @@
   - **gemini**: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in `.env`, mirrored from `~/.zshrc`.
   - **xai**: `XAI_API_KEY` in `.env`, mirrored from `~/.zshrc`.
   - **mantle**: `AWS_BEARER_TOKEN_BEDROCK` (or `MANTLE_API_KEY` / `BEDROCK_MANTLE_API_KEY`) in `.env`.
+  - **wafer** (OpenAI-compatible gateway `pass.wafer.ai`, default model `GLM-5.2`): `WAFER_API_KEY` in `.env`, mirrored from `~/.zshrc`. Needs a funded Wafer account balance.
   Keys live only in the gitignored `.env`; do not duplicate them in tracked files. The compaction redirect pins `--provider mantle`, so the live patch runs on the `.env` Bedrock credential.
 
 ## Compaction Patcher & Launcher Shim Integration

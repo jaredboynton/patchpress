@@ -43,10 +43,10 @@ function argValue(name, fallback = undefined) {
 
 function normalizeProvider(value) {
   const provider = String(value || "codex").toLowerCase();
-  if (provider === "codex" || provider === "gemini" || provider === "xai" || provider === "mantle") {
+  if (provider === "codex" || provider === "gemini" || provider === "xai" || provider === "mantle" || provider === "wafer") {
     return provider;
   }
-  throw new Error("Unsupported provider: " + value + " (expected codex, gemini, xai, or mantle)");
+  throw new Error("Unsupported provider: " + value + " (expected codex, gemini, xai, mantle, or wafer)");
 }
 
 const PROVIDER = normalizeProvider(
@@ -71,6 +71,9 @@ const MANTLE_API_KEY =
 const MANTLE_CHAT_COMPLETIONS_URL =
   process.env.MANTLE_CHAT_COMPLETIONS_URL ||
   "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions";
+const WAFER_API_KEY = process.env.WAFER_API_KEY || "";
+const WAFER_CHAT_COMPLETIONS_URL =
+  process.env.WAFER_CHAT_COMPLETIONS_URL || "https://pass.wafer.ai/v1/chat/completions";
 const DEFAULT_INPUT = "transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl";
 const MODEL =
   argValue("--model") ||
@@ -81,7 +84,9 @@ const MODEL =
       ? process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning"
       : PROVIDER === "mantle"
         ? process.env.MANTLE_COMPACT_MODEL || "xai.grok-4.3"
-        : process.env.CODEX_COMPACT_MODEL || "gpt-5.4");
+        : PROVIDER === "wafer"
+          ? process.env.WAFER_COMPACT_MODEL || "GLM-5.2"
+          : process.env.CODEX_COMPACT_MODEL || "gpt-5.4");
 const SERVICE_TIER = process.env.CODEX_COMPACT_SERVICE_TIER || "priority";
 const REASONING_EFFORT = process.env.CODEX_COMPACT_REASONING_EFFORT || "low";
 const GEMINI_THINKING_LEVEL = process.env.GEMINI_COMPACT_THINKING_LEVEL || "none";
@@ -193,9 +198,13 @@ for (const renderer of rendererStatsRenderers) {
   }
 }
 const temperatureRaw = argValue("--temperature", process.env.COMPACT_TEMPERATURE || "");
-const TEMPERATURE = temperatureRaw === "" ? null : Number.parseFloat(temperatureRaw);
+let TEMPERATURE = temperatureRaw === "" ? null : Number.parseFloat(temperatureRaw);
 if (temperatureRaw !== "" && !Number.isFinite(TEMPERATURE)) {
   throw new Error("Expected --temperature to be a finite number");
+}
+// Default temperature 0.4 for Grok 4.3 (mantle) and Grok 4.20 (xai) when not set explicitly.
+if (TEMPERATURE === null && (MODEL.includes("grok-4.3") || MODEL.includes("grok-4.20"))) {
+  TEMPERATURE = 0.4;
 }
 const customSummaryInstructions = argValue("--summary-instructions", "");
 const compactAndPrompt = argValue("--compact-and", "");
@@ -1666,7 +1675,7 @@ function buildChatCompletionsRequestBody(promptText, stats) {
 
 function buildRequestBody(promptText, stats) {
   if (PROVIDER === "gemini") return buildGeminiRequestBody(promptText, stats);
-  if (PROVIDER === "xai" || PROVIDER === "mantle") return buildChatCompletionsRequestBody(promptText, stats);
+  if (PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer") return buildChatCompletionsRequestBody(promptText, stats);
   return buildCodexRequestBody(promptText, stats);
 }
 
@@ -1681,6 +1690,7 @@ function providerEndpoint() {
   }
   if (PROVIDER === "xai") return XAI_API_BASE_URL.replace(/\/$/, "") + "/chat/completions";
   if (PROVIDER === "mantle") return MANTLE_CHAT_COMPLETIONS_URL;
+  if (PROVIDER === "wafer") return WAFER_CHAT_COMPLETIONS_URL;
   return CODEX_RESPONSES_URL;
 }
 
@@ -1793,7 +1803,7 @@ function redactChatCompletionsRequestForLog(request, stats) {
 
 function redactRequestForLog(request, stats) {
   if (PROVIDER === "gemini") return redactGeminiRequestForLog(request, stats);
-  if (PROVIDER === "xai" || PROVIDER === "mantle") {
+  if (PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer") {
     return redactChatCompletionsRequestForLog(request, stats);
   }
   return redactCodexRequestForLog(request, stats);
@@ -1920,7 +1930,7 @@ function streamAdapter() {
       responseId: () => null,
     };
   }
-  if (PROVIDER === "xai" || PROVIDER === "mantle") {
+  if (PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer") {
     return {
       deltaText: chatCompletionsDeltaText,
       collectOutputText: collectChatCompletionsOutputText,
@@ -3927,6 +3937,9 @@ async function main() {
     if (PROVIDER === "mantle" && !MANTLE_API_KEY) {
       throw new Error("Missing MANTLE_API_KEY, BEDROCK_MANTLE_API_KEY, or AWS_BEARER_TOKEN_BEDROCK for --provider mantle");
     }
+    if (PROVIDER === "wafer" && !WAFER_API_KEY) {
+      throw new Error("Missing WAFER_API_KEY for --provider wafer");
+    }
     process.stderr.write("sending full transcript request: " + JSON.stringify(requestMeta) + "\n");
 
     const response =
@@ -3940,11 +3953,11 @@ async function main() {
             },
             body: bodyText,
           })
-        : PROVIDER === "xai" || PROVIDER === "mantle"
+        : PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer"
           ? await fetch(endpoint, {
               method: "POST",
               headers: {
-                Authorization: "Bearer " + (PROVIDER === "xai" ? XAI_API_KEY : MANTLE_API_KEY),
+                Authorization: "Bearer " + (PROVIDER === "xai" ? XAI_API_KEY : PROVIDER === "mantle" ? MANTLE_API_KEY : WAFER_API_KEY),
                 Accept: "text/event-stream",
                 "Content-Type": "application/json",
               },
