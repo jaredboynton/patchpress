@@ -3,7 +3,12 @@
 - Favor the most recent version of any model or model family when adding code, docs, defaults, examples, or benchmark configs.
 - In this repo, do not reference outdated Gemini Flash/Flash-Lite lines in code or documentation. Use the current Gemini Flash/Flash-Lite line instead.
 - Exceptions are allowed only with specific reasoning recorded next to the choice, such as selecting a non-reasoning variant of a newer model family when that is the benchmark target.
-- Bedrock Mantle benchmark auth lives in the repo-local ignored `.env`. Source it before Mantle runs, for example `set -a; source .env; set +a`; do not duplicate the key in tracked files.
+- Provider credentials all resolve with no manual setup. The compaction script auto-loads the repo-local gitignored `.env` ([compact-full-transcript.mjs:13](file:///Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/compact-full-transcript.mjs)) and resolves a key per provider:
+  - **codex** (the script's default provider): OAuth from `~/.codex/auth.json`, always present; no env key needed.
+  - **gemini**: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in `.env`, mirrored from `~/.zshrc`.
+  - **xai**: `XAI_API_KEY` in `.env`, mirrored from `~/.zshrc`.
+  - **mantle**: `AWS_BEARER_TOKEN_BEDROCK` (or `MANTLE_API_KEY` / `BEDROCK_MANTLE_API_KEY`) in `.env`.
+  Keys live only in the gitignored `.env`; do not duplicate them in tracked files. The compaction redirect pins `--provider mantle`, so the live patch runs on the `.env` Bedrock credential.
 
 ## Compaction Patcher & Launcher Shim Integration
 
@@ -27,5 +32,5 @@ To substitute native Anthropic API compaction in Claude Code with the custom har
 
 ### Wiring into `~/bin/claude`
 
-The user command [~/bin/claude](file:///Users/jaredboynton/bin/claude) executes the real binary via `$HOME/.local/bin/claude`. Since our launcher shim occupies `$HOME/.local/bin/claude`, any launch through `~/bin/claude` runs the shim, ensuring any newly installed Claude Code updates are automatically patched before execution.
+The user command [~/bin/claude](file:///Users/jaredboynton/bin/claude) is first in the interactive PATH and is not rewritten by Claude Code's auto-updater, which only re-symlinks `~/.local/bin/claude` to the new version (deobfuscated installer `3761.js:465`). Before exec, the wrapper resolves the latest `~/.local/share/claude/versions/<semver>` binary and, when the `CLAUDE_COMPACT_PATCH_v1` marker is absent, runs the patcher on it. This is the durable persistence hook: every post-update version is patched on its first launch. The block fails open, so a patch error never blocks launching Claude Code. `CLAUDE_COMPACT_PATCHER` and `CLAUDE_VERSIONS_DIR` override the patcher and versions-directory paths. The `~/.local/bin/claude` shim performs the same patch-on-launch for the current session; the updater overwrites it on the next update, so `~/bin/claude` is what carries the patch across versions.
 
