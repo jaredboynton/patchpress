@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { readdirSync, existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import { execSync, spawn } from "child_process";
 import { homedir } from "os";
+import { fileURLToPath } from "url";
 
 // Find latest version in ~/.local/share/claude/versions
 const versionsDir = join(homedir(), ".local/share/claude/versions");
@@ -47,7 +48,7 @@ try {
 
 if (needsPatch && existsSync(activeBinary)) {
   try {
-    const patcherPath = "/Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/patcher/patch-claude.mjs";
+    const patcherPath = join(dirname(fileURLToPath(import.meta.url)), "patch-claude.mjs");
     if (existsSync(patcherPath)) {
       execSync("node " + patcherPath + " " + activeBinary, { stdio: "ignore" });
     }

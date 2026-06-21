@@ -2,6 +2,12 @@ import { readFileSync, writeFileSync, copyFileSync, existsSync, readlinkSync, un
 import { join, resolve, dirname } from "path";
 import { execSync } from "child_process";
 import { homedir } from "os";
+import { fileURLToPath } from "url";
+
+// Absolute path to the external compaction script, derived from this file's
+// location (repo-portable). patch-claude.mjs lives in scripts/patcher/, so the
+// compaction script is one directory up.
+const compactScript = resolve(dirname(fileURLToPath(import.meta.url)), "../compact-full-transcript.mjs");
 
 // Helper to expand tilde in paths
 function expandTilde(pathStr) {
@@ -152,7 +158,13 @@ if (closeBraceIndex === -1) {
 const bodyByteLength = closeBraceIndex - openBraceIndex - 1;
 
 // Generate redirection code
-const redirectCode = `try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=globalThis.require("fs"),cp=globalThis.require("child_process"),path=globalThis.require("path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");cp.execSync("node /Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/compact-full-transcript.mjs --input "+tempIn+" --out-dir "+tempOutDir,{stdio:"inherit"});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:"gemini-3.5-flash",content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){console.error("Compaction redirect failed, falling back to mock:",err);return{type:"assistant",message:{role:"assistant",model:"gemini-3.5-flash",content:[{type:"text",text:"Compaction failed. Continuing session."}],usage:{input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0}}}}`;
+// On any failure the redirect rethrows (it does NOT return a mock summary).
+// Source: the autocompact runner (deobfuscated 4409.js:225-237) catches a throw
+// and returns {wasCompacted:false}, preserving the un-compacted conversation. A
+// returned mock instead yields wasCompacted:true and REPLACES the whole
+// conversation with the mock text (catastrophic context loss). Child output is
+// redirected to a log file rather than inherited, so it never corrupts the TUI.
+const redirectCode = `try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=globalThis.require("fs"),cp=globalThis.require("child_process"),path=globalThis.require("path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");cp.execSync("node ${compactScript} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1",{stdio:"ignore"});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;if(!summaryText)throw new Error("redirect: empty summary text from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:"gemini-3.5-flash",content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{globalThis.require("fs").appendFileSync("/tmp/claude-compact.log","[patch] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
 
 const redirectByteLength = Buffer.from(redirectCode, "utf8").length;
 
