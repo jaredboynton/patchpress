@@ -1,10 +1,40 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 import { arch, homedir, platform, release } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Load .env relative to the script directory
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPath = resolve(__dirname, "../.env");
+if (existsSync(envPath)) {
+  const envContent = readFileSync(envPath, "utf8");
+  for (const line of envContent.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.substring(0, eqIdx).trim();
+    let val = trimmed.substring(eqIdx + 1).trim();
+    // Strip quotes
+    if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
+      val = val.substring(1, val.length - 1);
+    }
+    // Simple interpolation for self-references
+    if (val.startsWith("$")) {
+      const refKey = val.slice(1);
+      if (process.env[refKey]) {
+        val = process.env[refKey];
+      }
+    }
+    if (!process.env[key]) {
+      process.env[key] = val;
+    }
+  }
+}
 
 function argValue(name, fallback = undefined) {
   const idx = process.argv.indexOf(name);
