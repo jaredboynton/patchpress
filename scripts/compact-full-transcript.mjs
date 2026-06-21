@@ -5,7 +5,7 @@ import { createWriteStream, mkdirSync, readFileSync, writeFileSync, existsSync }
 import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 import { arch, homedir, platform, release } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Load .env relative to the script directory
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -89,7 +89,9 @@ const MODEL =
           : process.env.CODEX_COMPACT_MODEL || "gpt-5.4");
 const SERVICE_TIER = process.env.CODEX_COMPACT_SERVICE_TIER || "priority";
 const REASONING_EFFORT = process.env.CODEX_COMPACT_REASONING_EFFORT || "low";
-const GEMINI_THINKING_LEVEL = process.env.GEMINI_COMPACT_THINKING_LEVEL || "none";
+const GEMINI_THINKING_LEVEL =
+  process.env.GEMINI_COMPACT_THINKING_LEVEL ||
+  (MODEL.includes("flash-lite") ? "minimal" : "none");
 const GEMINI_MAX_OUTPUT_TOKENS = Number.parseInt(
   process.env.GEMINI_COMPACT_MAX_OUTPUT_TOKENS || "65536",
   10
@@ -202,10 +204,17 @@ let TEMPERATURE = temperatureRaw === "" ? null : Number.parseFloat(temperatureRa
 if (temperatureRaw !== "" && !Number.isFinite(TEMPERATURE)) {
   throw new Error("Expected --temperature to be a finite number");
 }
-// Default temperature 0.4 for Grok 4.3 (mantle) and Grok 4.20 (xai) when not set explicitly.
-if (TEMPERATURE === null && (MODEL.includes("grok-4.3") || MODEL.includes("grok-4.20"))) {
+// Default temperature 0.4 for Grok 4.3 (mantle), Grok 4.20 (xai), and Gemini
+// Flash-Lite when not set explicitly.
+if (
+  TEMPERATURE === null &&
+  (MODEL.includes("grok-4.3") || MODEL.includes("grok-4.20") || MODEL.includes("flash-lite"))
+) {
   TEMPERATURE = 0.4;
 }
+// Reasoning effort for the OpenAI-compatible chat-completions providers (xai/mantle/wafer).
+// Empty means omit the field and use the server default. Codex uses its own reasoning plumbing.
+const CHAT_REASONING_EFFORT = argValue("--reasoning-effort", process.env.COMPACT_REASONING_EFFORT || "");
 const customSummaryInstructions = argValue("--summary-instructions", "");
 const compactAndPrompt = argValue("--compact-and", "");
 const fromOutputPath = argValue("--from-output", "");
@@ -1670,6 +1679,9 @@ function buildChatCompletionsRequestBody(promptText, stats) {
   if (TEMPERATURE !== null) {
     request.body.temperature = TEMPERATURE;
   }
+  if (CHAT_REASONING_EFFORT) {
+    request.body.reasoning_effort = CHAT_REASONING_EFFORT;
+  }
   return request;
 }
 
@@ -2248,17 +2260,15 @@ function validateSummary(value, lineHashArtifacts) {
   return null;
 }
 
-function normalizeLegacySummary(summary) {
-  let ruleStatusDefaulted = 0;
-  let promisesMadeDefaulted = 0;
+// Coerce summary blocks that cannot pass local validation as-is into a
+// paragraph: code_block format is not accepted, and a "bullet" body with a
+// leading marker or an embedded newline is not a single bullet item. Strict
+// provider schemas cannot enforce these string-content rules, so the model can
+// legitimately return such a block; coercing here keeps one malformed block
+// from aborting the whole run. Idempotent: re-running finds nothing to relax.
+function relaxSummaryBlockFormats(summary) {
   let bulletFormatRelaxed = 0;
   let codeBlockDowngraded = 0;
-  for (const item of summary.rules_and_invariants || []) {
-    if (typeof item.status !== "string") {
-      item.status = "current";
-      ruleStatusDefaulted += 1;
-    }
-  }
   for (const item of summary.summary_blocks || []) {
     if (item?.format === "code_block") {
       item.format = "paragraph";
@@ -2274,6 +2284,19 @@ function normalizeLegacySummary(summary) {
       bulletFormatRelaxed += 1;
     }
   }
+  return { bulletFormatRelaxed, codeBlockDowngraded };
+}
+
+function normalizeLegacySummary(summary) {
+  let ruleStatusDefaulted = 0;
+  let promisesMadeDefaulted = 0;
+  for (const item of summary.rules_and_invariants || []) {
+    if (typeof item.status !== "string") {
+      item.status = "current";
+      ruleStatusDefaulted += 1;
+    }
+  }
+  const { bulletFormatRelaxed, codeBlockDowngraded } = relaxSummaryBlockFormats(summary);
   if (!Array.isArray(summary.promises_made)) {
     summary.promises_made = [];
     promisesMadeDefaulted = 1;
@@ -2395,6 +2418,10 @@ function deriveCompatibilityFields(summary) {
 }
 
 function normalizeDerivedSummaryFields(summary) {
+  // Relax non-conforming block formats before validation. This runs on every
+  // response (fresh provider output and reloaded output alike), so a single
+  // multi-line bullet no longer aborts a fresh run with a hard validation fail.
+  const { bulletFormatRelaxed, codeBlockDowngraded } = relaxSummaryBlockFormats(summary);
   const compatibilityArraysDefaulted = [];
   const derived = deriveCompatibilityFields(summary);
   for (const key of COMPATIBILITY_ARRAY_KEYS) {
@@ -2405,6 +2432,8 @@ function normalizeDerivedSummaryFields(summary) {
   return {
     compatibilityArraysDefaulted,
     sourceLinesDerived: summary.source_lines_used.length,
+    bulletFormatRelaxed,
+    codeBlockDowngraded,
   };
 }
 
@@ -4327,8 +4356,10 @@ async function main() {
     legacy_model_user_messages_discarded: legacyModelUserMessagesDiscarded,
     legacy_rule_status_defaulted: legacySummaryNormalization.ruleStatusDefaulted,
     legacy_promises_made_defaulted: legacySummaryNormalization.promisesMadeDefaulted,
-    legacy_bullet_format_relaxed: legacySummaryNormalization.bulletFormatRelaxed,
-    legacy_code_block_downgraded: legacySummaryNormalization.codeBlockDowngraded,
+    legacy_bullet_format_relaxed:
+      legacySummaryNormalization.bulletFormatRelaxed + derivedSummaryNormalization.bulletFormatRelaxed,
+    legacy_code_block_downgraded:
+      legacySummaryNormalization.codeBlockDowngraded + derivedSummaryNormalization.codeBlockDowngraded,
     derived_compatibility_arrays_defaulted:
       derivedSummaryNormalization.compatibilityArraysDefaulted.length,
     derived_compatibility_array_keys: derivedSummaryNormalization.compatibilityArraysDefaulted,
@@ -4406,16 +4437,25 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch(async (error) => {
-  try {
-    await mkdir(outDir, { recursive: true });
-    await writeFile(
-      join(outDir, "failure.json"),
-      JSON.stringify({ ok: false, error: error.stack || error.message }, null, 2) + "\n"
-    );
-  } catch {
-    // Ignore secondary failure while reporting the primary error.
-  }
-  console.error(JSON.stringify({ ok: false, error: error.message }, null, 2));
-  process.exit(1);
-});
+// Run the CLI only when executed directly (subprocess, redirect, launcher).
+// When imported by a test, argv[1] is the test file, so main() is skipped and
+// the exported internals can be unit-tested without triggering a compaction run.
+const invokedDirectly =
+  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch(async (error) => {
+    try {
+      await mkdir(outDir, { recursive: true });
+      await writeFile(
+        join(outDir, "failure.json"),
+        JSON.stringify({ ok: false, error: error.stack || error.message }, null, 2) + "\n"
+      );
+    } catch {
+      // Ignore secondary failure while reporting the primary error.
+    }
+    console.error(JSON.stringify({ ok: false, error: error.message }, null, 2));
+    process.exit(1);
+  });
+}
+
+export { validateSummary, normalizeDerivedSummaryFields, normalizeLegacySummary, relaxSummaryBlockFormats };

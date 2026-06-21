@@ -144,12 +144,16 @@ so Gemini can enforce the harness JSON contract while streaming text chunks.
 Defaults:
 
 - model: `gemini-3.5-flash`
-- thinking level: `none`
+- thinking level: `none` (Flash-Lite defaults to `minimal`; see below)
+- temperature: unset (Gemini API default), except Flash-Lite defaults to `0.4`
 - max output tokens: `65536`
 
 `none` is translated per Gemini model family: Gemini 3.x Flash/Flash-Lite use
 `thinkingLevel: "minimal"` because those models do not expose full
-thinking-off; older non-thinking Flash lines omit `thinkingConfig`.
+thinking-off; older non-thinking Flash lines omit `thinkingConfig`. Flash-Lite
+additionally defaults `GEMINI_COMPACT_THINKING_LEVEL` to `minimal` and
+temperature to `0.4` (the tuned fast-lane settings), so it runs with explicit
+minimal thinking and a low temperature without any env override.
 
 Overrides:
 
@@ -181,4 +185,5 @@ Provider defaults:
 - Bedrock Mantle: `xai.grok-4.3` at `https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions`
 
 For Gemini phase-2 runs, use `gemini-3.5-flash` with minimal thinking and
-`gemini-3.1-flash-lite` with medium thinking.
+`gemini-3.1-flash-lite` with minimal thinking at temperature 0.4 (the script's
+built-in Flash-Lite defaults).
