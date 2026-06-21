@@ -1,109 +1,131 @@
 # Current Compaction Benchmark
 
-This is the canonical current benchmark document for `claudecompact-patcher`.
-Older benchmark tables are historical unless their numbers are repeated here.
+Canonical current benchmark for `claudecompact-patcher`. Every row below traces
+to a run artifact under `runs/bench-*`. Scoring is two separate signals, the
+deterministic gate and the v3 semantic judge; see `docs/judging-and-scoring.md`.
 
-## Current Decision
+## Headline
 
-Use Gemini as the default validated live route. Bedrock Mantle Grok 4.3 is now
-a validated Sentinel alternate with lower reported provider input tokens than
-the Gemini Sentinel lanes. xAI direct and Codex remain unrouted until the
-empty-span rehydration issue is fixed and rerun.
+All five models compact the 595k-token transcript successfully. The two-layer
+score separates them on quality, and wall time separates them on speed:
 
-| Lane | Provider | Model | Renderer | Routing Status |
-|---|---|---|---|---|
-| Default quality | Gemini | `gemini-3.5-flash` | Sentinel | Current best speed/quality pass. |
-| Fast | Gemini | `gemini-3.1-flash-lite` | Sentinel | Current fastest validated pass. |
-| Bedrock alternate | Bedrock Mantle | `xai.grok-4.3` | Sentinel | Validated pass; lower reported input tokens than Gemini Sentinel. |
-| Stable fallback | Gemini | `gemini-3.5-flash` | stripped | Use when avoiding Sentinel-specific behavior. |
-| xAI candidate | xAI | `grok-4.20-0309-non-reasoning` | Sentinel or stripped | Do not route yet; latest run failed local validation. |
-| Codex candidate | Codex | `gpt-5.4` | Sentinel or stripped | Do not route yet; latest run failed local validation. |
+- **Best quality:** `gpt-5.4` (codex) — top deterministic score and a clean
+  10/10 judge on both renderers, at the cost of latency (~32-40s).
+- **Best balance:** `gemini-3.5-flash` — 92/100 deterministic, 10/10 judge,
+  ~18-22s.
+- **Cross-provider alternate:** `grok-4.20` (xAI direct) — 89-90/100, 9-10/10
+  judge, ~12-14s.
+- **Fastest:** `gemini-3.1-flash-lite` — ~4s, but only on the **stripped**
+  renderer (9/10 judge). On sentinel it passes the deterministic gate yet fails
+  the judge (7/10, next-step actionability absent), so the fast lane must use the
+  stripped renderer.
+- **Weakest:** Bedrock Mantle `xai.grok-4.3` — borderline and unstable. It
+  straddles both gates and flips pass/fail across runs (this run: sentinel 84
+  deterministic / 8 judge-pass; stripped 88 / 8 judge-fail on an absent next
+  step). Not recommended over the direct providers above.
 
 ## Benchmark Conditions
 
 | Field | Value |
-|---|---:|
-| Rerun date | 2026-06-20 |
+|---|---|
+| Date | 2026-06-20 |
 | Source transcript | `transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl` |
-| Records | 1,066 |
+| Transcript sha256 | `22894a749f51b3461c310f3b988d247f8da0affc7086ea4fa84a5d7645b6cf20` |
 | Raw bytes | 2,379,590 |
 | Raw char/4 estimate | 593,956 tokens |
-| Current prompt/schema | `scripts/compact-full-transcript.mjs` current working version |
-| Handoff renderer | ordered+dedup handoff renderer |
-| User messages | deterministic `## User Messages` ledger |
-| Preserve tail | `--preserve-tail 0` |
-| Local scorecard | `scripts/score-compaction-result.mjs` |
-| Semantic judge | `scripts/judge-compaction-result.mjs`, `gpt-5.5`, medium reasoning |
+| Records numbered (citable) | 799 of 1,066 raw |
+| Preserve tail | 16 (default) |
+| Renderers | `sentinel`, `stripped` |
+| Deterministic score | `scripts/score-compaction-result.mjs` (`deterministic-compaction-score.v2`) |
+| Semantic judge | `scripts/judge-compaction-result.mjs`, `gpt-5.5`, medium reasoning, 3 trials (median) |
 
-Provider token counts are not apples-to-apples. Gemini reports
-`promptTokenCount`; Codex reports Responses `input_tokens`; xAI-compatible
-providers report chat-completions `prompt_tokens` with different accounting.
+Provider input-token accounting is not apples-to-apples: Gemini reports
+`promptTokenCount`, Codex reports Responses `input_tokens`, xAI reports
+chat-completions `prompt_tokens`. Wall time is a single serial run on a local
+M4 Max (indicative, not averaged).
 
 ## Current Live Results
 
-| Lane | Model | Renderer | Status | Wall Time | Provider Input Tokens | Output Tokens | Summary Tokens | After Tokens | Retention Signals | Score | Judge |
-|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---|
-| Default quality | `gemini-3.5-flash` | Sentinel | pass | 19.70s | 175,193 | 2,526 | 1,092 | 4,513 | 4 rules, 4 plan items, 2 promises, 36 capsules, 34 cited lines | 90/100 | pass |
-| Fast | `gemini-3.1-flash-lite` | Sentinel | pass | 3.74s | 175,193 | 1,001 | 416 | 3,512 | 2 rules, 2 plan items, 1 promise, 13 capsules, 12 cited lines | 90/100 | pass |
-| Bedrock alternate | `xai.grok-4.3` | Sentinel | pass | 9.20s | 138,556 | 812 | 513 | 3,805 | 2 rules, 2 plan items, 1 promise, 9 capsules, 9 cited lines | 90/100 | pass |
-| Stable fallback | `gemini-3.5-flash` | stripped | pass | 20.45s | 200,836 | 1,761 | 758 | 3,917 | 3 rules, 4 plan items, 1 promise, 46 capsules, 38 cited lines | 90/100 | pass |
-| Fast stripped | `gemini-3.1-flash-lite` | stripped | pass | 3.53s | 200,836 | 880 | 328 | 4,134 | 2 rules, 2 plan items, 0 promises, 7 capsules, 10 cited lines | 90/100 | pass |
+| Model | Renderer | Wall | Deterministic /100 | Judge /10 | Input tok | Summary tok | After tok | Rules/Plans/Promises | Capsules | Cited lines |
+|---|---|---:|---|---|---:|---:|---:|---|---:|---:|
+| `gpt-5.4` (codex) | sentinel | 32.0s | 94 pass | 10 pass | 130,971 | 1,515 | 25,186 | 9 / 7 / 3 | 55 | 799 |
+| `gpt-5.4` (codex) | stripped | 39.6s | 92 pass | 10 pass | 159,169 | 1,657 | 25,263 | 8 / 7 / 0 | 55 | 672 |
+| `gemini-3.5-flash` | sentinel | 17.8s | 92 pass | 10 pass | 159,221 | 999 | 24,453 | 3 / 7 / 1 | 39 | 120 |
+| `gemini-3.5-flash` | stripped | 22.2s | 92 pass | 10 pass | 187,471 | 1,155 | 24,234 | 5 / 8 / 0 | 98 | 62 |
+| `grok-4.20` (xAI) | sentinel | 12.3s | 89 pass | 9 pass | 127,438 | 957 | 24,718 | 4 / 5 / 3 | 18 | 668 |
+| `grok-4.20` (xAI) | stripped | 13.6s | 90 pass | 10 pass | 155,386 | 973 | 24,650 | 3 / 2 / 1 | 25 | 799 |
+| `gemini-3.1-flash-lite` | sentinel | 3.8s | 85 pass | 7 **fail** | 159,221 | 405 | 23,368 | 2 / 2 / 0 | 9 | 20 |
+| `gemini-3.1-flash-lite` | stripped | 4.1s | 88 pass | 9 pass | 187,471 | 504 | 24,175 | 2 / 2 / 1 | 12 | 616 |
+| `xai.grok-4.3` (Mantle) | sentinel | 10.1s | 84 **fail** | 8 pass | 128,030 | 489 | 23,498 | 2 / 2 / 1 | 15 | 15 |
+| `xai.grok-4.3` (Mantle) | stripped | 9.7s | 88 pass | 8 **fail** | 155,978 | 406 | 23,631 | 2 / 3 / 1 | 10 | 52 |
 
-## Current Failed Or Blocked Runs
+`grok-4.20` is `grok-4.20-0309-non-reasoning`. Codex runs at low reasoning,
+priority tier.
 
-| Provider | Model | Renderer | Observed Status | Evidence |
-|---|---|---|---|---|
-| xAI direct | `grok-4.20-0309-non-reasoning` | Sentinel | local validation failed after 15.45s | Structured output cited spans that rehydrated to empty evidence-capsule text segments. |
-| xAI direct | `grok-4.20-0309-non-reasoning` | stripped | local validation failed after 13.51s | Structured output cited spans that rehydrated to empty evidence-capsule text segments. |
-| Codex | `gpt-5.4`, low reasoning, priority | Sentinel | local validation failed after 38.58s | Structured output cited metadata-only or otherwise non-text spans that rehydrated empty. |
-| Codex | `gpt-5.4`, low reasoning, priority | stripped | local validation failed after 30.00s+ | Structured output cited metadata-only or otherwise non-text spans that rehydrated empty. |
+## Reading the two scores
 
-Structured outputs worked at the JSON Schema layer for the failed xAI/Codex
-runs. The failure happened later in the local grounding contract: the cited line
-ranges did not produce non-empty `text_segments` during local rehydration.
+- **Deterministic /100 (gate):** code-only checks (artifacts, hashes, spans,
+  required literals, state counts, footprint). The gate passes at >= 85 with no
+  hard failure.
+- **Judge /10 (verdict):** the v3 semantic judge's `total_level_score` (sum of
+  five dimensions on absent/partial/clear) with `overall_pass`. A handoff fails
+  if any dimension is absent, even when the deterministic gate passes — which is
+  exactly what happens to `gemini-3.1-flash-lite` on sentinel (gate 85, judge
+  7/10 because next-step actionability is absent). The two layers are meant to
+  disagree: structural soundness is not continuation readiness.
+
+## Routing
+
+1. **Default quality:** `gemini-3.5-flash` (either renderer) — 10/10 judge,
+   92/100 deterministic, ~18-22s.
+2. **Highest quality:** `gpt-5.4` (codex, either renderer) — top deterministic
+   and 10/10 judge, when ~32-40s latency is acceptable.
+3. **Fast lane:** `gemini-3.1-flash-lite` with the **stripped** renderer — ~4s,
+   9/10 judge. Do not pair flash-lite with sentinel: that lane fails the judge.
+4. **Cross-provider alternate:** `grok-4.20` (xAI direct) — ~12-14s, 9-10/10
+   judge.
+
+Bedrock Mantle (`xai.grok-4.3`) is runnable but not recommended: its handoffs are
+the thinnest of the field and its sentinel lane fails both layers.
+
+## Request parity across providers
+
+Every lane uses the same provider-independent prompt from
+`buildFullTranscriptPrompt()` (`scripts/compact-full-transcript.mjs:1380`); only
+the renderer (sentinel vs stripped) varies the evidence instructions, equally
+across providers. The prompt is instruction-only, with no few-shot examples.
+
+All providers use strict structured output (`json_schema`, `strict: true`) against
+the identical summary schema, including the `minimum:1`/`maximum:N` bounds on
+source-span line numbers (`compact-full-transcript.mjs:1348`). A direct probe
+confirms Bedrock accepts the full bounded schema under `strict:true` (HTTP 200),
+so Mantle uses the same schema as every provider with no carve-out. Bedrock's one
+quirk is an intermittent content-safety block (a 400 that clears on retry),
+unrelated to schema shape. Mantle's weak handoffs are the model, not the request
+shape.
 
 ## Artifact Paths
 
-| Run | Result |
-|---|---|
-| Gemini 3.5 Flash Sentinel | `runs/rerun-sentinel-gemini-35-flash-2026-06-20/result.json` |
-| Gemini Flash-Lite Sentinel | `runs/rerun-sentinel-gemini-31-flash-lite-medium-2026-06-20/result.json` |
-| Bedrock Mantle Grok 4.3 Sentinel | `runs/rerun-sentinel-mantle-grok-43-2026-06-20/result.json` |
-| Gemini 3.5 Flash stripped | `runs/rerun-current-stripped-gemini-35-flash-2026-06-20/result.json` |
-| Gemini Flash-Lite stripped | `runs/rerun-current-stripped-gemini-31-flash-lite-medium-2026-06-20/result.json` |
-| xAI Sentinel failed output | `runs/rerun-sentinel-xai-grok-420-nonreasoning-2026-06-20/model-output.json` |
-| xAI stripped failed output | `runs/rerun-current-stripped-xai-grok-420-nonreasoning-2026-06-20/model-output.json` |
-| Codex Sentinel failed output | `runs/rerun-sentinel-codex-gpt-54-low-2026-06-20/model-output.json` |
-| Codex stripped failed output | `runs/rerun-current-stripped-codex-gpt-54-low-2026-06-20/model-output.json` |
-| Gemini 3.5 Flash Sentinel judge | `runs/semantic-judge-rerun-sentinel-gemini-35-flash-2026-06-20/semantic-judge-result.json` |
-| Gemini Flash-Lite Sentinel judge | `runs/semantic-judge-rerun-sentinel-gemini-31-flash-lite-medium-2026-06-20/semantic-judge-result.json` |
-| Bedrock Mantle Grok 4.3 Sentinel judge | `runs/semantic-judge-rerun-sentinel-mantle-grok-43-2026-06-20/semantic-judge-result.json` |
-| Gemini 3.5 Flash stripped judge | `runs/semantic-judge-rerun-current-stripped-gemini-35-flash-2026-06-20/semantic-judge-result.json` |
-| Gemini Flash-Lite stripped judge | `runs/semantic-judge-rerun-current-stripped-gemini-31-flash-lite-medium-2026-06-20/semantic-judge-result.json` |
+Each lane writes `runs/bench-<lane>/result.json` (compaction) and
+`runs/bench-<lane>/semantic-judge/semantic-judge-result.json` (v3 judge,
+3-trial median). Lanes: `codex-sentinel`, `codex-stripped`, `g35flash-sentinel`,
+`g35flash-stripped`, `xai-sentinel`, `xai-stripped`, `g31lite-sentinel`,
+`g31lite-stripped`, `mantle-sentinel`, `mantle-stripped`. Deterministic scores
+are reproduced with `node scripts/score-compaction-result.mjs runs/bench-<lane>`.
 
-## Current Routing
+## Reproduce
 
-1. Use `gemini-3.5-flash` with Sentinel as the default quality lane.
-2. Use `gemini-3.1-flash-lite` with Sentinel as the fast lane.
-3. Use Bedrock Mantle `xai.grok-4.3` with Sentinel as the validated Bedrock alternate.
-4. Use `gemini-3.5-flash` with stripped renderer when Sentinel behavior is under investigation.
-5. Do not route xAI direct or Codex until empty-span rehydration is repaired and a fresh rerun passes local validation, scorecard, and semantic judge.
+```sh
+# one lane (gemini-3.5-flash, stripped)
+node scripts/compact-full-transcript.mjs --provider gemini --model gemini-3.5-flash \
+  --transcript-renderer stripped \
+  --input transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl \
+  --out-dir runs/bench-g35flash-stripped
+node scripts/score-compaction-result.mjs runs/bench-g35flash-stripped
+node scripts/judge-compaction-result.mjs runs/bench-g35flash-stripped
+```
 
-## Historical Benchmark Docs
-
-The following files are link-preserving stubs and must not contain current
-benchmark tables:
-
-- `docs/model-mix-recommendation.md`
-- `docs/phase-2-benchmark-results.md`
-
-Other experiment and design docs may explain why features exist, but this file
-is the only current source for benchmark results and routing.
-
-## Acceptance Checks For This Document
-
-- `docs/benchmark.md` is the only full current benchmark document.
-- `docs/model-mix-recommendation.md` and `docs/phase-2-benchmark-results.md` are pointers, not duplicate tables.
-- Current rows trace to the run artifacts listed above.
-- xAI/Codex are described as current validation failures, not permanent model failures.
-- Historical benchmark numbers are not presented as current routing evidence.
+Codex adds `--provider codex --model gpt-5.4 --reasoning-effort low --service-tier priority`;
+xAI uses `--provider xai --model grok-4.20-0309-non-reasoning`; Mantle uses
+`--provider mantle --model xai.grok-4.3` and authenticates with `MANTLE_API_KEY`,
+`BEDROCK_MANTLE_API_KEY`, or `AWS_BEARER_TOKEN_BEDROCK`.
