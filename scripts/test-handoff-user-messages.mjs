@@ -449,7 +449,84 @@ try {
     Array.isArray(derivedSummary.source_lines_used) && derivedSummary.source_lines_used.includes(1),
     "derived summary source lines missing"
   );
+  // Citable-filter invariant: metadata-with-text records (last-prompt.lastPrompt,
+  // ai-title.aiTitle) are surfaced and citable; genuinely contentless metadata
+  // (mode, permission-mode, bare last-prompt) is excluded from the numbered set,
+  // so the model cannot anchor an evidence span to a record that rehydrates empty.
+  const metadataRecords = [
+    {
+      type: "user",
+      uuid: "m-u1",
+      timestamp: "2026-06-20T00:02:00.000Z",
+      message: { role: "user", content: "Durable instruction: preserve the omega constraint." },
+    },
+    { type: "mode", mode: "normal", sessionId: "s-meta" },
+    {
+      type: "last-prompt",
+      lastPrompt: "Reconstruct the proto fully from captured traffic.",
+      leafUuid: "l-1",
+      sessionId: "s-meta",
+    },
+    { type: "permission-mode", permissionMode: "bypassPermissions", sessionId: "s-meta" },
+    { type: "ai-title", aiTitle: "Proto reconstruction session", sessionId: "s-meta" },
+    { type: "last-prompt", leafUuid: "l-2", sessionId: "s-meta" },
+    {
+      type: "assistant",
+      uuid: "m-a1",
+      timestamp: "2026-06-20T00:02:01.000Z",
+      message: { role: "assistant", content: "Reconstructed the proto and verified it." },
+    },
+  ];
+  // Citable records after filtering, in order: user(1), last-prompt.lastPrompt(2),
+  // ai-title.aiTitle(3), assistant(4). The three contentless records are dropped.
+  const metadataCitableCount = 4;
+  const metadataInput = join(tmp, "metadata.jsonl");
+  const metadataTranscript = jsonl(metadataRecords);
+  await writeFile(metadataInput, metadataTranscript);
+  const metadataSummary = summaryFor(metadataTranscript, metadataCitableCount, "metadata");
+  metadataSummary.summary_blocks.push({
+    section: "Title Evidence",
+    format: "paragraph",
+    body: "Synthetic evidence anchored to the ai-title record.",
+    source_spans: [{ start_line: 3, end_line: 3 }],
+  });
+  const metadataOutput = join(tmp, "metadata-output.json");
+  await writeFile(metadataOutput, JSON.stringify(metadataSummary));
+  const metadataOutDir = join(tmp, "metadata-run");
+  runCompact({ inputPath: metadataInput, outputPath: metadataOutput, outDir: metadataOutDir });
+  const metadataResult = await readJson(join(metadataOutDir, "result.json"));
+  assertEqual(metadataResult.before_records, metadataCitableCount, "metadata citable record count");
+  const metadataState = await readJson(join(metadataOutDir, "handoff-state.json"));
+  for (const [idx, capsule] of metadataState.evidence_capsules.entries()) {
+    assert(capsule.text_segments.length > 0, "metadata evidence " + idx + " text segments empty");
+  }
+  const metadataSpans = await readJson(join(metadataOutDir, "rehydrated-spans.json"));
+  assert(
+    metadataSpans.some((span) => span.extracted_text.includes("Reconstruct the proto fully from captured traffic")),
+    "metadata last-prompt text was not surfaced as citable evidence"
+  );
+  assert(
+    metadataSpans.some((span) => span.extracted_text.includes("Proto reconstruction session")),
+    "metadata ai-title text was not surfaced as citable evidence"
+  );
+
+  // A citation beyond the citable count must be rejected, not silently dropped.
+  const overcitedSummary = summaryFor(metadataTranscript, metadataCitableCount, "overcited");
+  overcitedSummary.summary_blocks[0].source_spans = [
+    { start_line: metadataCitableCount + 1, end_line: metadataCitableCount + 1 },
+  ];
+  const overcitedOutput = join(tmp, "overcited-output.json");
+  await writeFile(overcitedOutput, JSON.stringify(overcitedSummary));
+  let overcitedRejected = false;
+  try {
+    runCompact({ inputPath: metadataInput, outputPath: overcitedOutput, outDir: join(tmp, "overcited-run") });
+  } catch {
+    overcitedRejected = true;
+  }
+  assert(overcitedRejected, "citation beyond the citable record count was not rejected");
+
   console.log("handoff user-message preservation test passed");
+  console.log("citable-filter invariant test passed");
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }

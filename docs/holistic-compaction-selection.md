@@ -70,7 +70,7 @@ gates until live provider runs prove retention is no worse than `stripped`.
 | Sentinel renderer | EXP-08 ordered+dedup dry-run request body is 468,748 bytes versus 601,526 for stripped; omitted tool output is 137,749 chars (~34,437 char/4 tokens); no-tail replay is 5,353 after tokens and scorecard 100/100. The prior live stripped Codex run reported 168,325 input tokens at 601,907 request bytes, so Sentinel projects to about 131,087 input tokens if the same ratio holds. No live Sentinel compaction input-token count has been observed. |
 | Artifact policy | EXP-08 manifest has policy schema `artifact-retention-policy.v1`; all 13 artifacts include retention, exposure, and redaction fields. |
 | Native endpoints | Provider-native opaque blobs are not portable across providers/models, so they do not satisfy the requirement to compact a Claude session with a different compaction model. |
-| Semantic judge | EXP-09 live-judged the ordered+dedup Sentinel replay with `gpt-5.5` medium reasoning: `overall_pass=true`, `validation_error=null`, 4 verdicts, `20,101` input tokens, `803` output tokens, and `156` reasoning tokens. |
+| Semantic judge | EXP-09 live-judged the ordered+dedup Sentinel replay with `gpt-5.5` medium reasoning: `overall_pass=true`, `validation_error=null`, 4 historical v1 verdicts, `20,101` input tokens, `803` output tokens, and `156` reasoning tokens. The current v3 judge scores five continuation dimensions on an absent/partial/clear scale with faithfulness as a hard gate; see `docs/judging-and-scoring.md`. |
 
 ## Benchmark Routing
 

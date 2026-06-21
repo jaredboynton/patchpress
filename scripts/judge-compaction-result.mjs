@@ -24,6 +24,19 @@ const JUDGE_SERVICE_TIER = argValue(
   "--service-tier",
   process.env.CODEX_JUDGE_SERVICE_TIER || "priority",
 );
+// Single-sample reasoning-model judging has real run-to-run variance (a lone
+// faithfulness flip can spuriously fail a good handoff). Run multiple trials and
+// take the per-dimension median level (self-consistency), then recompute the
+// outcome from the aggregated levels. Default 3; set 1 for a cheap single pass.
+const JUDGE_TRIALS = Math.max(1, Number.parseInt(argValue("--trials", process.env.CODEX_JUDGE_TRIALS || "3"), 10) || 1);
+const JUDGE_CRITERIA = [
+  "goal_intent_fidelity",
+  "next_step_actionability",
+  "constraint_promise_preservation",
+  "state_artifact_recoverability",
+  "faithfulness",
+];
+const LEVEL_SCORES = { absent: 0, partial: 1, clear: 2 };
 
 function argValue(name, fallback = undefined) {
   const idx = process.argv.indexOf(name);
@@ -153,9 +166,18 @@ function judgeOutputSchema(expectedHashes = {}, rubricVersion = "") {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["schema", "rubric_version", "candidate_hashes", "overall_pass", "verdicts", "unknowns", "evidence_refs"],
+    required: [
+      "schema",
+      "rubric_version",
+      "candidate_hashes",
+      "total_level_score",
+      "overall_pass",
+      "dimensions",
+      "unknowns",
+      "evidence_refs",
+    ],
     properties: {
-      schema: { type: "string", enum: ["semantic-compaction-judge-output.v1"] },
+      schema: { type: "string", enum: ["semantic-compaction-judge-output.v3"] },
       rubric_version: exactStringSchema(rubricVersion),
       candidate_hashes: {
         type: "object",
@@ -167,20 +189,21 @@ function judgeOutputSchema(expectedHashes = {}, rubricVersion = "") {
           state_sha256: exactStringSchema(expectedHashes.state_sha256),
         },
       },
+      total_level_score: { type: "integer", minimum: 0, maximum: JUDGE_CRITERIA.length * 2 },
       overall_pass: { type: "boolean" },
-      verdicts: {
+      dimensions: {
         type: "array",
+        minItems: JUDGE_CRITERIA.length,
+        maxItems: JUDGE_CRITERIA.length,
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["criterion", "verdict", "reason", "evidence_refs"],
+          required: ["criterion", "evidence_quote", "reason", "level", "evidence_refs"],
           properties: {
-            criterion: {
-              type: "string",
-              enum: ["groundedness", "completeness", "continuation_utility", "conciseness"],
-            },
-            verdict: { type: "string", enum: ["pass", "fail", "unknown"] },
+            criterion: { type: "string", enum: JUDGE_CRITERIA },
+            evidence_quote: { type: "string" },
             reason: { type: "string" },
+            level: { type: "string", enum: ["absent", "partial", "clear"] },
             evidence_refs: { type: "array", items: { type: "string" } },
           },
         },
@@ -193,10 +216,17 @@ function judgeOutputSchema(expectedHashes = {}, rubricVersion = "") {
 
 function validateJudgeOutput(value, allowedEvidenceRefs, expectedHashes, expectedRubricVersion) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "judge output is not an object";
-  if (value.schema !== "semantic-compaction-judge-output.v1") return "schema invalid";
+  if (value.schema !== "semantic-compaction-judge-output.v3") return "schema invalid";
   if (typeof value.rubric_version !== "string" || !value.rubric_version) return "rubric_version missing";
   if (expectedRubricVersion && value.rubric_version !== expectedRubricVersion) {
     return "rubric_version mismatch: " + value.rubric_version;
+  }
+  if (
+    !Number.isInteger(value.total_level_score) ||
+    value.total_level_score < 0 ||
+    value.total_level_score > JUDGE_CRITERIA.length * 2
+  ) {
+    return "total_level_score invalid";
   }
   if (typeof value.overall_pass !== "boolean") return "overall_pass missing";
   if (!value.candidate_hashes || typeof value.candidate_hashes !== "object") return "candidate_hashes missing";
@@ -208,32 +238,102 @@ function validateJudgeOutput(value, allowedEvidenceRefs, expectedHashes, expecte
       return "candidate_hashes." + key + " mismatch";
     }
   }
-  if (!Array.isArray(value.verdicts)) return "verdicts missing";
-  const requiredCriteria = new Set(["groundedness", "completeness", "continuation_utility", "conciseness"]);
-  for (const [idx, verdict] of value.verdicts.entries()) {
-    if (!verdict || typeof verdict !== "object" || Array.isArray(verdict)) return "verdicts[" + idx + "] invalid";
-    if (!["groundedness", "completeness", "continuation_utility", "conciseness"].includes(verdict.criterion)) {
-      return "verdicts[" + idx + "].criterion invalid";
+  if (!Array.isArray(value.dimensions)) return "dimensions missing";
+  if (value.dimensions.length !== JUDGE_CRITERIA.length) return "dimensions length invalid";
+  const requiredCriteria = new Set(JUDGE_CRITERIA);
+  for (const [idx, verdict] of value.dimensions.entries()) {
+    if (!verdict || typeof verdict !== "object" || Array.isArray(verdict)) return "dimensions[" + idx + "] invalid";
+    if (!requiredCriteria.has(verdict.criterion)) {
+      return "dimensions[" + idx + "].criterion invalid";
     }
     requiredCriteria.delete(verdict.criterion);
-    if (!["pass", "fail", "unknown"].includes(verdict.verdict)) return "verdicts[" + idx + "].verdict invalid";
-    if (typeof verdict.reason !== "string" || !verdict.reason.trim()) return "verdicts[" + idx + "].reason missing";
+    if (typeof verdict.evidence_quote !== "string" || !verdict.evidence_quote.trim()) {
+      return "dimensions[" + idx + "].evidence_quote missing";
+    }
+    if (typeof verdict.reason !== "string" || !verdict.reason.trim()) return "dimensions[" + idx + "].reason missing";
+    if (!Object.hasOwn(LEVEL_SCORES, verdict.level)) return "dimensions[" + idx + "].level invalid";
     if (!Array.isArray(verdict.evidence_refs) || verdict.evidence_refs.length === 0) {
-      return "verdicts[" + idx + "].evidence_refs missing";
+      return "dimensions[" + idx + "].evidence_refs missing";
     }
     for (const ref of verdict.evidence_refs) {
-      if (!allowedEvidenceRefs.has(ref)) return "verdicts[" + idx + "] unknown evidence ref: " + ref;
+      if (!allowedEvidenceRefs.has(ref)) return "dimensions[" + idx + "] unknown evidence ref: " + ref;
     }
   }
   if (requiredCriteria.size > 0) {
     return "missing verdict criteria: " + Array.from(requiredCriteria).join(", ");
   }
+  // Code-side aggregation (calculatedJudgeOutcome) is authoritative; the model's
+  // self-reported total_level_score / overall_pass are advisory. A mismatch is
+  // surfaced as a consistency warning by the caller, not a validation failure, so
+  // the judge stays robust to model arithmetic slips on the redundant self-report.
   if (!Array.isArray(value.unknowns)) return "unknowns missing";
   if (!Array.isArray(value.evidence_refs)) return "evidence_refs missing";
   for (const ref of value.evidence_refs) {
     if (!allowedEvidenceRefs.has(ref)) return "unknown top-level evidence ref: " + ref;
   }
   return null;
+}
+
+function calculatedJudgeOutcome(judgeOutput) {
+  const dimensions = Array.isArray(judgeOutput?.dimensions) ? judgeOutput.dimensions : [];
+  const totalLevelScore = dimensions.reduce((sum, dimension) => sum + (LEVEL_SCORES[dimension.level] ?? 0), 0);
+  const faithfulnessAbsent = dimensions.some(
+    (dimension) => dimension.criterion === "faithfulness" && dimension.level === "absent",
+  );
+  const hasAbsentNonFaithfulness = dimensions.some(
+    (dimension) => dimension.criterion !== "faithfulness" && dimension.level === "absent",
+  );
+  const overallPass = !faithfulnessAbsent && !hasAbsentNonFaithfulness && totalLevelScore >= 8;
+  const warnings = [];
+  if (judgeOutput?.total_level_score !== totalLevelScore) {
+    warnings.push(
+      "reported total_level_score " + judgeOutput?.total_level_score + " recalculated to " + totalLevelScore,
+    );
+  }
+  if (judgeOutput?.overall_pass !== overallPass) {
+    warnings.push("reported overall_pass " + judgeOutput?.overall_pass + " recalculated to " + overallPass);
+  }
+  return { totalLevelScore, overallPass, warnings };
+}
+
+const LEVEL_NAMES = ["absent", "partial", "clear"];
+
+function medianLevel(levels) {
+  const ranks = levels.map((l) => LEVEL_SCORES[l] ?? 0).sort((a, b) => a - b);
+  if (ranks.length === 0) return "absent";
+  const mid = Math.floor((ranks.length - 1) / 2); // lower-middle: conservative on even trial counts
+  return LEVEL_NAMES[ranks[mid]];
+}
+
+// Combine K per-trial judge outputs into one via the per-dimension median level
+// (self-consistency), damping single-sample outliers. evidence_quote / reason /
+// evidence_refs come from a trial whose level equals the median.
+function aggregateJudgeTrials(trials) {
+  const base = trials[0];
+  const dimensions = JUDGE_CRITERIA.map((criterion) => {
+    const perTrial = trials.map((t) => (t.dimensions || []).find((d) => d.criterion === criterion)).filter(Boolean);
+    const level = medianLevel(perTrial.map((d) => d.level));
+    const rep = perTrial.find((d) => d.level === level) || perTrial[0] || {};
+    const refs = [...new Set(perTrial.flatMap((d) => d.evidence_refs || []))];
+    return {
+      criterion,
+      evidence_quote: rep.evidence_quote || "",
+      reason: rep.reason || "",
+      level,
+      evidence_refs: refs.length ? refs : rep.evidence_refs || [],
+    };
+  });
+  const calc = calculatedJudgeOutcome({ dimensions });
+  return {
+    schema: base.schema,
+    rubric_version: base.rubric_version,
+    candidate_hashes: base.candidate_hashes,
+    total_level_score: calc.totalLevelScore,
+    overall_pass: calc.overallPass,
+    dimensions,
+    unknowns: [...new Set(trials.flatMap((t) => t.unknowns || []))],
+    evidence_refs: [...new Set(trials.flatMap((t) => t.evidence_refs || []))],
+  };
 }
 
 function truncate(text, chars) {
@@ -252,15 +352,13 @@ function evidenceRefsFromState(state) {
     extracted_text_sha256: capsule.extracted_text_sha256,
     section: capsule.section,
   }));
-  const userRefs = (state.user_intent_events || [])
-    .filter((event) => event.priority === "must_keep" || event.priority === "high")
-    .map((event) => ({
-      id: event.id,
-      kind: event.kind,
-      priority: event.priority,
-      text_sha256: event.text_sha256,
-      source: event.source,
-    }));
+  const userRefs = (state.user_intent_events || []).map((event) => ({
+    id: event.id,
+    kind: event.kind,
+    priority: event.priority,
+    text_sha256: event.text_sha256,
+    source: event.source,
+  }));
   return [...capsuleRefs, ...userRefs];
 }
 
@@ -277,9 +375,17 @@ async function buildJudgeRequest(runDir) {
     rehydrated_md_sha256: sha256Text(rehydrated),
     state_sha256: sha256Text(JSON.stringify(state)),
   };
-  const rubricVersion = "semantic-compaction-rubric.v1";
+  const rubricVersion = "semantic-continuation-quality-rubric.v2";
+  // Ground truth fed to the judge is the structured canonical state plus evidence,
+  // with the rendered-handoff copies removed. The next agent receives only the
+  // rendered handoff; if the judge could see a re-paste of it here, a section
+  // dropped from the handoff would still appear present and escape detection.
+  const judgeGroundTruth = { ...state };
+  delete judgeGroundTruth.summary_markdown;
+  delete judgeGroundTruth.rendered_handoff;
+  delete judgeGroundTruth.summary_blocks;
   return {
-    schema: "semantic-compaction-judge-request.v1",
+    schema: "semantic-compaction-judge-request.v2",
     run_dir: runDir,
     candidate_hashes: candidateHashes,
     rubric: {
@@ -287,12 +393,23 @@ async function buildJudgeRequest(runDir) {
       gates_remain_deterministic: true,
       judge_is_advisory: true,
       instruction:
-        "Judge continuation quality only after deterministic artifact/hash/literal gates pass. Do not override deterministic failures. Use source evidence only; external knowledge is not allowed. Use pass/fail/unknown verdicts.",
+        "Judge the semantic quality of the rendered handoff a fresh agent receives as operating memory. Do not score schema validity, hash validity, literal presence, evidence counts, token footprint, or JSON shape; those are deterministic. Use source evidence only; external knowledge is not allowed. Score each semantic dimension on the anchored absent/partial/clear scale, then report total_level_score as the sum of dimension levels.",
       dimensions: {
-        groundedness: "Each material claim in handoff.md must be supported by handoff-state.json or summary.rehydrated.md evidence.",
-        completeness: "The handoff must preserve current objective, constraints, important artifacts, open work, and exact literals needed to continue.",
-        continuation_utility: "A fresh agent should know the next action and have enough context to proceed without reopening the full transcript.",
-        conciseness: "The handoff should avoid stale chronology and redundant tool output while preserving recoverable evidence.",
+        goal_intent_fidelity:
+          "Captures the current objective and latest user intent without reviving stale or reframed goals.",
+        next_step_actionability:
+          "A fresh agent could take the next concrete action without re-deriving it; the next step is specific and correct given the state.",
+        constraint_promise_preservation:
+          "Durable rules, constraints, promises, approvals, and do-not-redo instructions that affect continuation are present and not weakened.",
+        state_artifact_recoverability:
+          "Done and active work, active files, artifacts, validation results, and per-task status are recoverable without reopening the full transcript.",
+        faithfulness:
+          "Every material claim is supported by the rehydrated evidence, with no internal contradiction, unsupported completion claim, or stale state presented as current.",
+      },
+      scale: {
+        clear: "The criterion is fully satisfied with cited evidence and no material continuation risk.",
+        partial: "The criterion is partly satisfied but would require re-checking or some re-reading.",
+        absent: "The criterion is missing, contradicted, unsupported, or unsafe to rely on.",
       },
     },
     deterministic_metrics: {
@@ -311,14 +428,21 @@ async function buildJudgeRequest(runDir) {
       "Set rubric_version exactly to " + rubricVersion + ".",
       "Copy candidate_hashes exactly from the Candidate Hashes section.",
       "Do not use external knowledge. Each verdict must cite one or more IDs from evidence_refs.",
-      "Deterministic gates remain authoritative; your job is advisory semantic review of continuation quality.",
-      "Use pass/fail/unknown. Mark unknown when the provided evidence is insufficient.",
+      "Deterministic gates remain authoritative; do not judge schema validity, hash validity, literal presence, evidence counts, token footprint, or JSON shape.",
+      "Your job is semantic review of the rendered handoff as operating memory for the next agent.",
+      "The Handoff section is the only operating memory the next agent receives. The Ground Truth and Rehydrated Evidence sections are the source of truth it does not see; use them to verify the handoff and to detect omissions.",
+      "Score goal_intent_fidelity, next_step_actionability, constraint_promise_preservation, and state_artifact_recoverability on what the Handoff conveys. If a continuation-critical item present in Ground Truth (a durable rule, a pending task, the next step, an active file or artifact) is missing or weakened in the Handoff, that dimension is partial or absent.",
+      "Score faithfulness by checking every material Handoff claim against Ground Truth and Rehydrated Evidence; an unsupported, contradicted, or overstated claim makes faithfulness absent.",
+      "Ignore length, formatting, and markdown style; score content only.",
+      "For each dimension, provide evidence_quote and reason before choosing level.",
+      "Use level clear, partial, or absent. Set total_level_score to the sum where absent=0, partial=1, clear=2.",
+      "Set overall_pass true only when faithfulness is not absent, no other dimension is absent, and total_level_score is at least 8.",
       "",
-      "## Handoff",
+      "## Handoff (operating memory delivered to the next agent; evaluate THIS)",
       truncate(handoff, 16000),
       "",
-      "## Canonical State",
-      truncate(JSON.stringify(state, null, 2), 16000),
+      "## Ground Truth (canonical state and evidence; the next agent does NOT receive this section)",
+      truncate(JSON.stringify(judgeGroundTruth, null, 2), 16000),
       "",
       "## Rehydrated Evidence",
       truncate(rehydrated, 16000),
@@ -564,6 +688,7 @@ async function callCodexJudge(request, outDir) {
     request.candidate_hashes,
     request.rubric.version,
   );
+  const calculated = calculatedJudgeOutcome(judgeOutput);
   const result = {
     ok: !validationError,
     dry_run: false,
@@ -579,11 +704,70 @@ async function callCodexJudge(request, outDir) {
     usage: responseUsage(events),
     output_sha256: sha256Text(outputText),
     validation_error: validationError,
-    overall_pass: judgeOutput.overall_pass ?? null,
-    verdict_count: Array.isArray(judgeOutput.verdicts) ? judgeOutput.verdicts.length : 0,
+    total_level_score: calculated.totalLevelScore,
+    reported_total_level_score: judgeOutput.total_level_score ?? null,
+    overall_pass: calculated.overallPass,
+    reported_overall_pass: judgeOutput.overall_pass ?? null,
+    judge_consistency_warnings: calculated.warnings,
+    dimension_count: Array.isArray(judgeOutput.dimensions) ? judgeOutput.dimensions.length : 0,
   };
   await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(result, null, 2) + "\n");
   if (validationError) throw new Error("Codex judge output failed validation: " + validationError);
+  return result;
+}
+
+// Run JUDGE_TRIALS independent judge passes and aggregate them by per-dimension
+// median (self-consistency). Each trial gets a fresh session, so the samples are
+// independent. With JUDGE_TRIALS === 1 this is exactly a single callCodexJudge.
+async function judgeWithTrials(request, outDir) {
+  if (JUDGE_TRIALS === 1) return callCodexJudge(request, outDir);
+  const trialOutputs = [];
+  const perTrial = [];
+  for (let i = 0; i < JUDGE_TRIALS; i++) {
+    const trialDir = join(outDir, "trial" + i);
+    await mkdir(trialDir, { recursive: true });
+    try {
+      const r = await callCodexJudge(request, trialDir);
+      const out = JSON.parse(await readFile(join(trialDir, "semantic-judge-model-output.json"), "utf8"));
+      trialOutputs.push(out);
+      perTrial.push({
+        trial: i,
+        total_level_score: r.total_level_score,
+        overall_pass: r.overall_pass,
+        levels: Object.fromEntries((out.dimensions || []).map((d) => [d.criterion, d.level])),
+      });
+    } catch (error) {
+      perTrial.push({ trial: i, error: String(error.message).slice(0, 200) });
+    }
+  }
+  if (trialOutputs.length === 0) {
+    const failure = { ok: false, live: true, provider: "codex", error: "all judge trials failed", trials: JUDGE_TRIALS, per_trial: perTrial };
+    await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(failure, null, 2) + "\n");
+    throw new Error("all judge trials failed");
+  }
+  const aggregated = aggregateJudgeTrials(trialOutputs);
+  await writeFile(join(outDir, "semantic-judge-model-output.json"), JSON.stringify(aggregated) + "\n");
+  const allowedRefs = new Set((request.evidence_refs || []).map((ref) => ref.id));
+  const validationError = validateJudgeOutput(aggregated, allowedRefs, request.candidate_hashes, request.rubric.version);
+  const calculated = calculatedJudgeOutcome(aggregated);
+  const result = {
+    ok: !validationError,
+    live: true,
+    provider: "codex",
+    model: JUDGE_MODEL,
+    reasoning_effort: JUDGE_REASONING_EFFORT,
+    service_tier: JUDGE_SERVICE_TIER,
+    trials: JUDGE_TRIALS,
+    valid_trials: trialOutputs.length,
+    aggregation: "per_dimension_median",
+    total_level_score: calculated.totalLevelScore,
+    overall_pass: calculated.overallPass,
+    judge_consistency_warnings: calculated.warnings,
+    per_trial: perTrial,
+    validation_error: validationError,
+  };
+  await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(result, null, 2) + "\n");
+  if (validationError) throw new Error("Aggregated judge output failed validation: " + validationError);
   return result;
 }
 
@@ -609,7 +793,7 @@ async function main() {
     return;
   }
   if (!outputPath) {
-    const result = await callCodexJudge(request, outDir);
+    const result = await judgeWithTrials(request, outDir);
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -621,6 +805,7 @@ async function main() {
     request.candidate_hashes,
     request.rubric.version,
   );
+  const calculated = calculatedJudgeOutcome(judgeOutput);
   const result = {
     ok: !validationError,
     dry_run: false,
@@ -628,8 +813,12 @@ async function main() {
     run_dir: runDir,
     judge_output: basename(resolve(outputPath)),
     validation_error: validationError,
-    overall_pass: judgeOutput.overall_pass ?? null,
-    verdict_count: Array.isArray(judgeOutput.verdicts) ? judgeOutput.verdicts.length : 0,
+    total_level_score: calculated.totalLevelScore,
+    reported_total_level_score: judgeOutput.total_level_score ?? null,
+    overall_pass: calculated.overallPass,
+    reported_overall_pass: judgeOutput.overall_pass ?? null,
+    judge_consistency_warnings: calculated.warnings,
+    dimension_count: Array.isArray(judgeOutput.dimensions) ? judgeOutput.dimensions.length : 0,
   };
   await writeFile(join(outDir, "semantic-judge-result.json"), JSON.stringify(result, null, 2) + "\n");
   console.log(JSON.stringify(result, null, 2));

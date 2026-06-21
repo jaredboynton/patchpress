@@ -157,8 +157,75 @@ try {
   const judgeResult = JSON.parse(judgeStdout);
   assert(judgeResult.ok === true && judgeResult.dry_run === true, "judge dry run failed");
   const judgeRequest = await readJson(join(judgeOut, "semantic-judge-request.json"));
-  assert(judgeRequest.schema === "semantic-compaction-judge-request.v1", "judge request schema missing");
+  assert(judgeRequest.schema === "semantic-compaction-judge-request.v2", "judge request schema missing");
   assert(judgeRequest.rubric.gates_remain_deterministic === true, "judge deterministic-gate constraint missing");
+  assert(
+    judgeRequest.response_schema.properties.total_level_score.type === "integer",
+    "judge total-level score field missing"
+  );
+  assert(
+    judgeRequest.response_schema.properties.dimensions.items.properties.criterion.enum.includes("next_step_actionability"),
+    "next-step-actionability rubric missing"
+  );
+  const evidenceRef = judgeRequest.evidence_refs[0]?.id;
+  assert(evidenceRef, "judge request has no evidence refs");
+  const judgeCriteria = judgeRequest.response_schema.properties.dimensions.items.properties.criterion.enum;
+  const judgeOutput = {
+    schema: "semantic-compaction-judge-output.v3",
+    rubric_version: judgeRequest.rubric.version,
+    candidate_hashes: judgeRequest.candidate_hashes,
+    total_level_score: judgeCriteria.length * 2,
+    overall_pass: true,
+    dimensions: judgeCriteria.map((criterion) => ({
+      criterion,
+      evidence_quote: "Supported by the fixture evidence.",
+      reason: "Supported by the fixture evidence.",
+      level: "clear",
+      evidence_refs: [evidenceRef],
+    })),
+    unknowns: [],
+    evidence_refs: [evidenceRef],
+  };
+  const judgeOutputPath = join(tmp, "judge-output-valid.json");
+  await writeFile(judgeOutputPath, JSON.stringify(judgeOutput, null, 2) + "\n");
+  const judgeValidateOut = join(tmp, "judge-validate");
+  const judgeValidateStdout = runNode([
+    judgeScript,
+    outDir,
+    "--out-dir",
+    judgeValidateOut,
+    "--from-output",
+    judgeOutputPath,
+  ]);
+  const judgeValidateResult = JSON.parse(judgeValidateStdout);
+  assert(judgeValidateResult.total_level_score === judgeCriteria.length * 2, "valid judge score was not recorded");
+  assert(judgeValidateResult.dimension_count === judgeCriteria.length, "valid judge dimensions were not recorded");
+
+  const badJudgeOutputPath = join(tmp, "judge-output-bad-score.json");
+  await writeFile(
+    badJudgeOutputPath,
+    JSON.stringify({ ...judgeOutput, total_level_score: judgeCriteria.length * 2 - 1 }, null, 2) + "\n"
+  );
+  let rejectedBadScore = false;
+  try {
+    runNode([
+      judgeScript,
+      outDir,
+      "--out-dir",
+      join(tmp, "judge-bad-score"),
+      "--from-output",
+      badJudgeOutputPath,
+    ]);
+  } catch (error) {
+    rejectedBadScore = true;
+    assert(error.status === 1, "bad score validation failed with unexpected status");
+    const rejectedResult = JSON.parse(error.stdout);
+    assert(
+      rejectedResult.validation_error === "total_level_score does not match dimension levels",
+      "bad score validation error was not specific"
+    );
+  }
+  assert(rejectedBadScore, "judge accepted mismatched total_level_score");
 
   console.log("future work test passed");
 } finally {

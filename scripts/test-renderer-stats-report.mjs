@@ -33,7 +33,7 @@ try {
   assert(markdown.includes("## Renderer Comparison"), "missing renderer comparison");
   assert(markdown.includes("## Record Types"), "missing record types");
   assert(markdown.includes("## Content Block Types"), "missing block types");
-  assert(markdown.includes("| sentinel | 1,066 | 442,969 | 110,355 | 11 | 137,749 | 34,438 |"), "missing sentinel totals");
+  assert(markdown.includes("| sentinel | 1,066 | 451,925 | 112,401 | 11 | 137,749 | 34,438 |"), "missing sentinel totals");
   assert(markdown.includes("| thinking | 108 | 108 | 378,148 | 0 |"), "thinking blocks should be raw-only");
   assert(markdown.includes("| tool_result | 264 | 264 | 198,377 | 166,372 |"), "missing tool_result block stats");
   assert(markdown.includes("This report is generated locally and does not call any model provider."), "missing no-provider note");

@@ -146,6 +146,9 @@ provider-native compaction decision.
     deterministic metrics from `runs/exp08-sentinel-noapi`, and
     `gates_remain_deterministic: true`.
   - `runs/exp09-semantic-judge-validated-noapi/semantic-judge-result.json`
-    validated a saved strict JSON judge output with `4` verdicts,
+    validated the original saved strict JSON judge output with `4` verdicts,
     `validation_error: null`, candidate hashes, and mechanically checked
+    evidence refs. The current judge contract is v3: it scores five continuation
+    dimensions on an absent/partial/clear scale (faithfulness a hard gate),
+    recomputes the aggregate in code, and validates candidate hashes and
     evidence refs.

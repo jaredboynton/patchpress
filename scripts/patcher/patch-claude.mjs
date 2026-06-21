@@ -28,11 +28,9 @@ if (binaryPath) {
       const target = readlinkSync(symlinkPath);
       binaryPath = resolve(dirname(symlinkPath), target);
     } catch (e) {
-      // Fallback if not a symlink
       binaryPath = symlinkPath;
     }
   } else {
-    // Hardcoded target fallback
     binaryPath = join(homedir(), ".local/share/claude/versions/2.1.185");
   }
 }
@@ -69,7 +67,6 @@ if (restore) {
   try {
     symlinkSync(binaryPath, symlinkPath);
   } catch (e) {
-    // Fallback using ln -s command if native symlink fails
     try {
       execSync("ln -sf " + binaryPath + " " + symlinkPath);
     } catch (err) {}
@@ -93,47 +90,13 @@ if (isPatched && !existsSync(originalPath)) {
   console.log("Binary is already patched. Re-applying patch from original backup.");
 }
 
-// Locate Bun JS payload start and byteCount
-const TRAILER = "\n---- Bun! ----\n";
-const trailerBuf = Buffer.from(TRAILER);
-let trailerOffset = -1;
-for (let i = fileSize - trailerBuf.length; i >= 0; i--) {
-  if (buf[i] === 0x0a && buf.subarray(i, i + trailerBuf.length).equals(trailerBuf)) {
-    trailerOffset = i;
-    break;
-  }
-}
-
-if (trailerOffset === -1) {
-  console.error("Failed to locate Bun trailer in binary.");
-  process.exit(1);
-}
-
-const os = trailerOffset - 32;
-const byteCount = Number(buf.readBigUInt64LE(os));
-
-let sectionOffset = -1;
-for (let i = 0; i < Math.min(fileSize, 8192); i++) {
-  if (buf[i] === 0x5f && buf[i+1] === 0x5f && buf[i+2] === 0x62 &&
-      buf[i+3] === 0x75 && buf[i+4] === 0x6e && buf[i+5] === 0x00) {
-    if (buf[i+16] === 0x5f && buf[i+17] === 0x5f && buf[i+18] === 0x42 &&
-        buf[i+19] === 0x55 && buf[i+20] === 0x4e) {
-      sectionOffset = buf.readUInt32LE(i + 48);
-      break;
-    }
-  }
-}
-
-const dataStart = sectionOffset >= 0 ? sectionOffset + 8 : trailerOffset + trailerBuf.length - byteCount;
-
-// Extract JS payload
-const jsBuffer = buf.subarray(dataStart, dataStart + byteCount);
-const jsContent = jsBuffer.toString("utf8");
+// Decode using latin1 for binary-safe 1-to-1 character-to-byte mapping
+const content = buf.toString("latin1");
 
 // Locating target function signature
 const regex = /async\s+function\s+([a-zA-Z0-9_$]+)\s*\(\{\s*messages\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*summaryRequest\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*appState\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*context\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*preCompactTokenCount\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*cacheSafeParams\s*:\s*([a-zA-Z0-9_$]+)(?:,[^}]+)?\}\)\s*\{/;
 
-const match = jsContent.match(regex);
+const match = content.match(regex);
 if (!match) {
   console.error("Compaction function anchor pattern was not found in the binary JS payload.");
   process.exit(1);
@@ -141,16 +104,16 @@ if (!match) {
 
 const signature = match[0];
 const messagesVar = match[2];
-const openBraceCharIndex = match.index + signature.length - 1;
+const openBraceIndex = match.index + signature.length - 1;
 
 // Locate closing brace matching algorithm
 let counter = 1;
-let closeBraceCharIndex = -1;
+let closeBraceIndex = -1;
 let inString = null;
 let escaped = false;
 
-for (let i = openBraceCharIndex + 1; i < jsContent.length; i++) {
-  const char = jsContent[i];
+for (let i = openBraceIndex + 1; i < content.length; i++) {
+  const char = content[i];
   if (escaped) {
     escaped = false;
     continue;
@@ -174,21 +137,19 @@ for (let i = openBraceCharIndex + 1; i < jsContent.length; i++) {
   } else if (char === "}") {
     counter--;
     if (counter === 0) {
-      closeBraceCharIndex = i;
+      closeBraceIndex = i;
       break;
     }
   }
 }
 
-if (closeBraceCharIndex === -1) {
+if (closeBraceIndex === -1) {
   console.error("Could not trace matching closing brace of compaction function.");
   process.exit(1);
 }
 
-// Map char indices to byte offsets inside jsBuffer
-const openBraceByteOffset = Buffer.from(jsContent.substring(0, openBraceCharIndex + 1), "utf8").length;
-const closeBraceByteOffset = Buffer.from(jsContent.substring(0, closeBraceCharIndex), "utf8").length;
-const bodyByteLength = closeBraceByteOffset - openBraceByteOffset;
+// Body length in bytes/chars is exactly the distance between braces
+const bodyByteLength = closeBraceIndex - openBraceIndex - 1;
 
 // Generate redirection code
 const redirectCode = `try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=globalThis.require("fs"),cp=globalThis.require("child_process"),path=globalThis.require("path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");cp.execSync("node /Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/compact-full-transcript.mjs --input "+tempIn+" --out-dir "+tempOutDir,{stdio:"inherit"});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:"gemini-3.5-flash",content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){console.error("Compaction redirect failed, falling back to mock:",err);return{type:"assistant",message:{role:"assistant",model:"gemini-3.5-flash",content:[{type:"text",text:"Compaction failed. Continuing session."}],usage:{input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0}}}}`;
@@ -203,7 +164,7 @@ if (redirectByteLength > bodyByteLength) {
 const paddingByteLength = bodyByteLength - redirectByteLength;
 const paddedRedirect = redirectCode + "/*" + " ".repeat(paddingByteLength - 4) + "*/";
 
-const paddedRedirectBuf = Buffer.from(paddedRedirect, "utf8");
+const paddedRedirectBuf = Buffer.from(paddedRedirect, "ascii");
 if (paddedRedirectBuf.length !== bodyByteLength) {
   console.error("Internal padding alignment verification mismatch.");
   process.exit(1);
@@ -220,8 +181,8 @@ if (!existsSync(originalPath)) {
   copyFileSync(binaryPath, originalPath);
 }
 
-// 2. Perform direct in-place buffer overwrite
-paddedRedirectBuf.copy(buf, dataStart + openBraceByteOffset);
+// 2. Perform direct in-place buffer overwrite using 1-to-1 byte offset
+paddedRedirectBuf.copy(buf, openBraceIndex + 1);
 
 writeFileSync(binaryPath, buf);
 
