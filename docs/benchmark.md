@@ -23,9 +23,10 @@ below).
   perfect 10/10 judge but drops below the deterministic gate (79/100), so the
   fast lane must use sentinel under the tuned defaults.
 - **Weakest:** Bedrock Mantle `xai.grok-4.3` — borderline and unstable. It
-  straddles both gates and flips pass/fail across runs (this run: sentinel 84
-  deterministic / 8 judge-pass; stripped 88 / 8 judge-fail on an absent next
-  step). Not recommended over the direct providers above.
+  straddles the deterministic gate and flips pass/fail across runs (this run, at
+  temperature 0.4: sentinel 81 deterministic / 10 judge-pass; stripped 86 / 9
+  judge-pass). `--reasoning-effort medium` lifts it over the gate (~85); at the
+  default it stays borderline. Not recommended over the direct providers above.
 - **Wafer `GLM-5.2` (wired, benchmark pending):** the provider is integrated and
   verified end-to-end on a small input (7,439-char summary). On the 595k
   transcript the `pass.wafer.ai` endpoint returned transient `ttfb_gate_shed`
@@ -65,15 +66,19 @@ M4 Max (indicative, not averaged).
 | `grok-4.20` (xAI) | stripped | 13.6s | 90 pass | 10 pass | 155,386 | 973 | 24,650 | 3 / 2 / 1 | 25 | 799 |
 | `gemini-3.1-flash-lite` | sentinel | 3.4s | 86 pass | 9 pass | 159,221 | 384 | 23,550 | 2 / 2 / 0 | 12 | 60 |
 | `gemini-3.1-flash-lite` | stripped | 4.7s | 79 **fail** | 10 pass | 187,471 | 557 | 23,671 | 2 / 3 / 0 | 17 | 35 |
-| `xai.grok-4.3` (Mantle) | sentinel | 10.1s | 84 **fail** | 8 pass | 128,030 | 489 | 23,498 | 2 / 2 / 1 | 15 | 15 |
-| `xai.grok-4.3` (Mantle) | stripped | 9.7s | 88 pass | 8 **fail** | 155,978 | 406 | 23,631 | 2 / 3 / 1 | 10 | 52 |
+| `xai.grok-4.3` (Mantle) | sentinel | 8.7s | 81 **fail** | 10 pass | 128,030 | 474 | 23,214 | 2 / 2 / 0 | 9 | 7 |
+| `xai.grok-4.3` (Mantle) | stripped | 10.3s | 86 pass | 9 pass | 155,978 | 528 | 23,662 | 3 / 2 / 0 | 14 | 75 |
 
 `grok-4.20` is `grok-4.20-0309-non-reasoning`. Codex runs at low reasoning,
-priority tier. `gemini-3.1-flash-lite` runs with the script's tuned defaults:
-temperature 0.4 and thinking `minimal` (see `compact-full-transcript.mjs:92,205`).
-The stripped lane needed one retry after a local-validation failure
-(`summary_blocks[1].body must be a single bullet item`); the score above is the
-retry.
+priority tier. The script defaults to temperature 0.4 for `grok-4.3`,
+`grok-4.20`, and `gemini-3.1-flash-lite`, and Gemini Flash-Lite to thinking
+`minimal` (see `compact-full-transcript.mjs`). A non-conforming block -- a
+multi-line or leading-marker "bullet", or a `code_block` -- is coerced to a
+paragraph before local validation, so a single malformed block no longer aborts
+the run; the earlier `summary_blocks[i].body must be a single bullet item` retry
+is gone (regression test: `scripts/test-bullet-normalization.mjs`). `grok-4.3`
+clears the deterministic gate with `--reasoning-effort medium` (~85); at the
+default with no reasoning it stays borderline (81-84).
 
 ## Reading the two scores
 

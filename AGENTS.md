@@ -42,7 +42,7 @@ The user command [~/bin/claude](file:///Users/jaredboynton/bin/claude) is first 
 ## Benchmark procedure (token-compressed)
 
 Tx=`transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl` (sha `22894a74...`, ~595k tok). Per provider P / model M, run BOTH renderers R in {sentinel, stripped}:
-`node scripts/compact-full-transcript.mjs --provider P --model M --transcript-renderer R --input Tx --out-dir runs/bench-P-R` (defaults: preserve-tail 16, temp null).
+`node scripts/compact-full-transcript.mjs --provider P --model M --transcript-renderer R --input Tx --out-dir runs/bench-P-R` (defaults: preserve-tail 16; temp 0.4 for grok-4.3/grok-4.20/flash-lite, else unset). Chat providers (xai/mantle/wafer) accept `--reasoning-effort none|low|medium|high`; grok-4.3 needs `medium` to clear the deterministic gate.
 Score each: `node scripts/score-compaction-result.mjs runs/bench-P-R` -> deterministic /100 (`deterministic-compaction-score.v2`).
 Judge each: `node scripts/judge-compaction-result.mjs runs/bench-P-R` -> `gpt-5.5`, medium reasoning, 3 trials, per-dimension median, /10.
 Then add one `docs/benchmark.md` table row per renderer: Wall, Det /100, Judge /10, input/summary/after tok, Rules/Plans/Promises, Capsules, Cited lines; refresh the Headline. Transient `rate_limit_error` / `ttfb_gate_shed` ("at capacity") -> retry. OpenAI-compatible providers (xai, mantle, wafer) share the chat-completions path.
