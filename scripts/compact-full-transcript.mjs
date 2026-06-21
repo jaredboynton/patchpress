@@ -41,12 +41,20 @@ function argValue(name, fallback = undefined) {
   return idx === -1 ? fallback : process.argv[idx + 1];
 }
 
+const PROVIDER_REGISTRY = {
+  codex:  { family: "codex",  defaultModel: () => process.env.CODEX_COMPACT_MODEL || "gpt-5.4" },
+  gemini: { family: "gemini", resolveKey: () => process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "", endpoint: () => (process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "") + "/models/" + encodeURIComponent(MODEL) + ":streamGenerateContent?alt=sse", defaultModel: () => process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash", missingKeyMsg: "Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini" },
+  xai:    { family: "chat",   resolveKey: () => process.env.XAI_API_KEY || "", endpoint: () => (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/chat/completions", defaultModel: () => process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning", missingKeyMsg: "Missing XAI_API_KEY for --provider xai" },
+  mantle: { family: "chat",   resolveKey: () => process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || process.env.AWS_BEARER_TOKEN_BEDROCK || "", endpoint: () => process.env.MANTLE_CHAT_COMPLETIONS_URL || "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions", defaultModel: () => process.env.MANTLE_COMPACT_MODEL || "xai.grok-4.3", missingKeyMsg: "Missing MANTLE_API_KEY, BEDROCK_MANTLE_API_KEY, or AWS_BEARER_TOKEN_BEDROCK for --provider mantle" },
+  wafer:  { family: "chat",   resolveKey: () => process.env.WAFER_API_KEY || "", endpoint: () => process.env.WAFER_CHAT_COMPLETIONS_URL || "https://pass.wafer.ai/v1/chat/completions", defaultModel: () => process.env.WAFER_COMPACT_MODEL || "GLM-5.2", missingKeyMsg: "Missing WAFER_API_KEY for --provider wafer" },
+};
+
 function normalizeProvider(value) {
   const provider = String(value || "codex").toLowerCase();
-  if (provider === "codex" || provider === "gemini" || provider === "xai" || provider === "mantle" || provider === "wafer") {
+  if (Object.prototype.hasOwnProperty.call(PROVIDER_REGISTRY, provider)) {
     return provider;
   }
-  throw new Error("Unsupported provider: " + value + " (expected codex, gemini, xai, mantle, or wafer)");
+  throw new Error("Unsupported provider: " + value + " (expected " + Object.keys(PROVIDER_REGISTRY).join(", ") + ")");
 }
 
 const PROVIDER = normalizeProvider(
@@ -61,32 +69,11 @@ const CODEX_INSTALLATION_ID_PATH =
 const CODEX_ORIGINATOR = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || "codex_cli_rs";
 const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || resolveCodexClientVersion();
 const CODEX_USER_AGENT = process.env.CODEX_USER_AGENT || buildCodexUserAgent();
-const GEMINI_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "";
-const GEMINI_API_BASE_URL =
-  process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
-const XAI_API_KEY = process.env.XAI_API_KEY || "";
-const XAI_API_BASE_URL = process.env.XAI_API_BASE_URL || "https://api.x.ai/v1";
-const MANTLE_API_KEY =
-  process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || process.env.AWS_BEARER_TOKEN_BEDROCK || "";
-const MANTLE_CHAT_COMPLETIONS_URL =
-  process.env.MANTLE_CHAT_COMPLETIONS_URL ||
-  "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions";
-const WAFER_API_KEY = process.env.WAFER_API_KEY || "";
-const WAFER_CHAT_COMPLETIONS_URL =
-  process.env.WAFER_CHAT_COMPLETIONS_URL || "https://pass.wafer.ai/v1/chat/completions";
 const DEFAULT_INPUT = "transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl";
 const MODEL =
   argValue("--model") ||
   process.env.COMPACT_MODEL ||
-  (PROVIDER === "gemini"
-    ? process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash"
-    : PROVIDER === "xai"
-      ? process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning"
-      : PROVIDER === "mantle"
-        ? process.env.MANTLE_COMPACT_MODEL || "xai.grok-4.3"
-        : PROVIDER === "wafer"
-          ? process.env.WAFER_COMPACT_MODEL || "GLM-5.2"
-          : process.env.CODEX_COMPACT_MODEL || "gpt-5.4");
+  PROVIDER_REGISTRY[PROVIDER].defaultModel();
 const SERVICE_TIER = process.env.CODEX_COMPACT_SERVICE_TIER || "priority";
 const REASONING_EFFORT = process.env.CODEX_COMPACT_REASONING_EFFORT || "low";
 const GEMINI_THINKING_LEVEL =
@@ -1686,23 +1673,15 @@ function buildChatCompletionsRequestBody(promptText, stats) {
 }
 
 function buildRequestBody(promptText, stats) {
-  if (PROVIDER === "gemini") return buildGeminiRequestBody(promptText, stats);
-  if (PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer") return buildChatCompletionsRequestBody(promptText, stats);
+  const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "gemini") return buildGeminiRequestBody(promptText, stats);
+  if (family === "chat") return buildChatCompletionsRequestBody(promptText, stats);
   return buildCodexRequestBody(promptText, stats);
 }
 
 function providerEndpoint() {
-  if (PROVIDER === "gemini") {
-    return (
-      GEMINI_API_BASE_URL.replace(/\/$/, "") +
-      "/models/" +
-      encodeURIComponent(MODEL) +
-      ":streamGenerateContent?alt=sse"
-    );
-  }
-  if (PROVIDER === "xai") return XAI_API_BASE_URL.replace(/\/$/, "") + "/chat/completions";
-  if (PROVIDER === "mantle") return MANTLE_CHAT_COMPLETIONS_URL;
-  if (PROVIDER === "wafer") return WAFER_CHAT_COMPLETIONS_URL;
+  const reg = PROVIDER_REGISTRY[PROVIDER];
+  if (reg.endpoint) return reg.endpoint();
   return CODEX_RESPONSES_URL;
 }
 
@@ -1814,10 +1793,9 @@ function redactChatCompletionsRequestForLog(request, stats) {
 }
 
 function redactRequestForLog(request, stats) {
-  if (PROVIDER === "gemini") return redactGeminiRequestForLog(request, stats);
-  if (PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer") {
-    return redactChatCompletionsRequestForLog(request, stats);
-  }
+  const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "gemini") return redactGeminiRequestForLog(request, stats);
+  if (family === "chat") return redactChatCompletionsRequestForLog(request, stats);
   return redactCodexRequestForLog(request, stats);
 }
 
@@ -1930,7 +1908,8 @@ function collectChatCompletionsOutputText(events) {
 }
 
 function streamAdapter() {
-  if (PROVIDER === "gemini") {
+  const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "gemini") {
     return {
       deltaText: geminiDeltaText,
       collectOutputText: collectGeminiOutputText,
@@ -1942,7 +1921,7 @@ function streamAdapter() {
       responseId: () => null,
     };
   }
-  if (PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer") {
+  if (family === "chat") {
     return {
       deltaText: chatCompletionsDeltaText,
       collectOutputText: collectChatCompletionsOutputText,
@@ -3710,10 +3689,10 @@ function buildCompactedTranscript({
       model: MODEL,
       transcriptRenderer,
       temperature: TEMPERATURE,
-      serviceTier: PROVIDER === "codex" ? SERVICE_TIER : null,
-      thinkingLevel: PROVIDER === "gemini" ? GEMINI_THINKING_LEVEL : null,
+      serviceTier: PROVIDER_REGISTRY[PROVIDER].family === "codex" ? SERVICE_TIER : null,
+      thinkingLevel: PROVIDER_REGISTRY[PROVIDER].family === "gemini" ? GEMINI_THINKING_LEVEL : null,
       thinkingConfig:
-        PROVIDER === "gemini" ? geminiThinkingConfig(MODEL, GEMINI_THINKING_LEVEL) : null,
+        PROVIDER_REGISTRY[PROVIDER].family === "gemini" ? geminiThinkingConfig(MODEL, GEMINI_THINKING_LEVEL) : null,
       sourceTranscriptSha256: stats.sha256,
     },
   };
@@ -3846,14 +3825,14 @@ async function main() {
     ),
     local_validation_schema: LOCAL_VALIDATION_SCHEMA,
     local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
-    service_tier: PROVIDER === "codex" ? SERVICE_TIER : null,
-    reasoning_effort: PROVIDER === "codex" ? REASONING_EFFORT : null,
+    service_tier: PROVIDER_REGISTRY[PROVIDER].family === "codex" ? SERVICE_TIER : null,
+    reasoning_effort: PROVIDER_REGISTRY[PROVIDER].family === "codex" ? REASONING_EFFORT : null,
     temperature: TEMPERATURE,
-    thinking_level: PROVIDER === "gemini" ? GEMINI_THINKING_LEVEL : null,
+    thinking_level: PROVIDER_REGISTRY[PROVIDER].family === "gemini" ? GEMINI_THINKING_LEVEL : null,
     thinking_config:
-      PROVIDER === "gemini" ? request.body.generationConfig?.thinkingConfig || null : null,
+      PROVIDER_REGISTRY[PROVIDER].family === "gemini" ? request.body.generationConfig?.thinkingConfig || null : null,
     max_output_tokens:
-      PROVIDER === "gemini" && Number.isFinite(GEMINI_MAX_OUTPUT_TOKENS)
+      PROVIDER_REGISTRY[PROVIDER].family === "gemini" && Number.isFinite(GEMINI_MAX_OUTPUT_TOKENS)
         ? GEMINI_MAX_OUTPUT_TOKENS
         : null,
     inputPath,
@@ -3957,36 +3936,29 @@ async function main() {
       ].join("\n")
     );
   } else {
-    if (PROVIDER === "gemini" && !GEMINI_API_KEY) {
-      throw new Error("Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini");
-    }
-    if (PROVIDER === "xai" && !XAI_API_KEY) {
-      throw new Error("Missing XAI_API_KEY for --provider xai");
-    }
-    if (PROVIDER === "mantle" && !MANTLE_API_KEY) {
-      throw new Error("Missing MANTLE_API_KEY, BEDROCK_MANTLE_API_KEY, or AWS_BEARER_TOKEN_BEDROCK for --provider mantle");
-    }
-    if (PROVIDER === "wafer" && !WAFER_API_KEY) {
-      throw new Error("Missing WAFER_API_KEY for --provider wafer");
+    const _reg = PROVIDER_REGISTRY[PROVIDER];
+    if (_reg.resolveKey && !_reg.resolveKey()) {
+      throw new Error(_reg.missingKeyMsg);
     }
     process.stderr.write("sending full transcript request: " + JSON.stringify(requestMeta) + "\n");
 
+    const _family = _reg.family;
     const response =
-      PROVIDER === "gemini"
+      _family === "gemini"
         ? await fetch(endpoint, {
             method: "POST",
             headers: {
-              "x-goog-api-key": GEMINI_API_KEY,
+              "x-goog-api-key": _reg.resolveKey(),
               Accept: "text/event-stream",
               "Content-Type": "application/json",
             },
             body: bodyText,
           })
-        : PROVIDER === "xai" || PROVIDER === "mantle" || PROVIDER === "wafer"
+        : _family === "chat"
           ? await fetch(endpoint, {
               method: "POST",
               headers: {
-                Authorization: "Bearer " + (PROVIDER === "xai" ? XAI_API_KEY : PROVIDER === "mantle" ? MANTLE_API_KEY : WAFER_API_KEY),
+                Authorization: "Bearer " + _reg.resolveKey(),
                 Accept: "text/event-stream",
                 "Content-Type": "application/json",
               },
@@ -4341,12 +4313,12 @@ async function main() {
     provider: PROVIDER,
     endpoint,
     model: MODEL,
-    service_tier: PROVIDER === "codex" ? SERVICE_TIER : null,
-    reasoning: PROVIDER === "codex" ? request.body.reasoning : null,
+    service_tier: PROVIDER_REGISTRY[PROVIDER].family === "codex" ? SERVICE_TIER : null,
+    reasoning: PROVIDER_REGISTRY[PROVIDER].family === "codex" ? request.body.reasoning : null,
     temperature: TEMPERATURE,
-    thinking_level: PROVIDER === "gemini" ? GEMINI_THINKING_LEVEL : null,
+    thinking_level: PROVIDER_REGISTRY[PROVIDER].family === "gemini" ? GEMINI_THINKING_LEVEL : null,
     thinking_config:
-      PROVIDER === "gemini" ? request.body.generationConfig?.thinkingConfig || null : null,
+      PROVIDER_REGISTRY[PROVIDER].family === "gemini" ? request.body.generationConfig?.thinkingConfig || null : null,
     request: requestMeta,
     response_id: adapter.responseId(events),
     usage: adapter.usage(events),
