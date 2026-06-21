@@ -158,13 +158,19 @@ if (closeBraceIndex === -1) {
 const bodyByteLength = closeBraceIndex - openBraceIndex - 1;
 
 // Generate redirection code
+// The compaction child runs via an async spawn awaited inside Sel (an async
+// function), so the Bun event loop keeps rendering the TUI during the run
+// instead of freezing on a synchronous execSync. The provider is pinned to
+// mantle, whose credential (AWS_BEARER_TOKEN_BEDROCK) the compaction script
+// auto-loads from the repo .env, so behavior does not depend on the script's
+// default provider. Child stdout/stderr go to a log file, never the TUI.
+//
 // On any failure the redirect rethrows (it does NOT return a mock summary).
 // Source: the autocompact runner (deobfuscated 4409.js:225-237) catches a throw
 // and returns {wasCompacted:false}, preserving the un-compacted conversation. A
 // returned mock instead yields wasCompacted:true and REPLACES the whole
-// conversation with the mock text (catastrophic context loss). Child output is
-// redirected to a log file rather than inherited, so it never corrupts the TUI.
-const redirectCode = `try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=globalThis.require("fs"),cp=globalThis.require("child_process"),path=globalThis.require("path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");cp.execSync("node ${compactScript} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1",{stdio:"ignore"});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;if(!summaryText)throw new Error("redirect: empty summary text from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:"gemini-3.5-flash",content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{globalThis.require("fs").appendFileSync("/tmp/claude-compact.log","[patch] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
+// conversation with the mock text (catastrophic context loss).
+const redirectCode = `try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=globalThis.require("fs"),cp=globalThis.require("child_process"),path=globalThis.require("path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactScript} --provider mantle --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;if(!summaryText)throw new Error("redirect: empty summary text from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0},model="mantle";try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage;if(resultObj.model)model=resultObj.model}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:model,content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{globalThis.require("fs").appendFileSync("/tmp/claude-compact.log","[patch] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
 
 const redirectByteLength = Buffer.from(redirectCode, "utf8").length;
 
