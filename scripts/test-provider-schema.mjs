@@ -78,11 +78,15 @@ try {
   const transcript = jsonl(records);
   await writeFile(inputPath, transcript);
 
-  const dryRun = execFileSync(
-    process.execPath,
-    [compactScript, "--input", inputPath, "--dry-run", "--provider", "codex"],
-    { cwd: repoRoot, encoding: "utf8" }
-  );
+  function providerDryRun(provider) {
+    return execFileSync(
+      process.execPath,
+      [compactScript, "--input", inputPath, "--dry-run", "--provider", provider],
+      { cwd: repoRoot, encoding: "utf8" }
+    );
+  }
+
+  const dryRun = providerDryRun("codex");
   const [, redactedRequest] = parseConcatenatedJson(dryRun);
   const schema = redactedRequest.body.text.format.schema;
   const required = schema.required || [];
@@ -92,6 +96,38 @@ try {
   assert(!required.includes("source_lines_used"), "provider schema requires derived source_lines_used");
   assert(!schema.properties.primary_request_and_intent, "provider schema still exposes legacy intent array");
   assert(!schema.properties.source_lines_used, "provider schema still exposes derived source_lines_used");
+  assert(
+    schema.properties.rules_and_invariants.description.includes("Durable live instructions and constraints") &&
+      schema.properties.rules_and_invariants.description.includes("Exclude ordinary completed tasks"),
+    "rules_and_invariants description does not distinguish live constraints from task history"
+  );
+  assert(
+    schema.properties.plans_and_task_state.description.includes("Work-state ledger") &&
+      schema.properties.plans_and_task_state.description.includes("not a rule list"),
+    "plans_and_task_state description does not distinguish task state from rules"
+  );
+  assert(
+    schema.properties.promises_made.description.includes("Explicit assistant commitments") &&
+      schema.properties.promises_made.description.includes("Do not infer promises from a user request alone"),
+    "promises_made description does not distinguish commitments from requests or plans"
+  );
+
+  const [, mantleRequest] = parseConcatenatedJson(providerDryRun("mantle"));
+  const mantleJsonSchema = mantleRequest.body.response_format.json_schema;
+  const mantleSchema = mantleJsonSchema.schema;
+  assert(mantleRequest.body.response_format.type === "json_schema", "Mantle is not using json_schema");
+  assert(mantleJsonSchema.strict === true, "Mantle json_schema is not strict");
+  assert(
+    typeof mantleJsonSchema.description === "string" && mantleJsonSchema.description.trim(),
+    "Mantle json_schema is missing a description"
+  );
+  // Bedrock accepts numeric minimum/maximum under strict json_schema (verified by
+  // direct probe: the full bounded schema returns HTTP 200), so Mantle uses the
+  // same line-bounded schema as every provider.
+  const mantleStartLine =
+    mantleSchema.properties.summary_blocks.items.properties.source_spans.items.properties.start_line;
+  assert(mantleStartLine.minimum === 1, "Mantle provider schema dropped the start_line minimum bound");
+  assert(typeof mantleStartLine.maximum === "number", "Mantle provider schema dropped the start_line maximum bound");
 
   const outputPath = join(tmp, "minimal-output.json");
   await writeFile(

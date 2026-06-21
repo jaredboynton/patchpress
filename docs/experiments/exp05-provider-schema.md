@@ -22,9 +22,9 @@ https://developers.openai.com/api/docs/guides/structured-outputs
   `primary_request_and_intent`, `key_technical_concepts`,
   `files_and_code_sections`, `errors_and_fixes`, `problem_solving`,
   `pending_tasks`, and `source_lines_used`.
-- Mantle provider schema omits numeric line bounds because Bedrock structured
-  outputs reject `minimum` and `maximum`; local validation still enforces line
-  ranges.
+- Mantle provider schema carries the same numeric line bounds as every provider:
+  a direct probe confirms Bedrock accepts `minimum`/`maximum` under strict
+  `json_schema` (HTTP 200), so there is no provider carve-out.
 
 ## Commands
 
@@ -59,7 +59,7 @@ Provider dry-runs:
 | Codex `gpt-5.4` | pass | Provider schema omits legacy compatibility arrays and keeps line bounds. |
 | Gemini `gemini-3.5-flash` | pass | Provider schema omits legacy compatibility arrays and keeps line bounds. |
 | xAI `grok-4.20-0309-non-reasoning` | pass | Provider schema omits legacy compatibility arrays and keeps line bounds. |
-| Mantle `xai.grok-4.3` | pass | Provider schema omits legacy compatibility arrays and numeric line bounds. |
+| Mantle `xai.grok-4.3` | pass | Provider schema omits legacy compatibility arrays and keeps line bounds. |
 
 ## Local Validation
 

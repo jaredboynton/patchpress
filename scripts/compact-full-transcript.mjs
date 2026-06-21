@@ -36,7 +36,8 @@ const GEMINI_API_BASE_URL =
   process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const XAI_API_BASE_URL = process.env.XAI_API_BASE_URL || "https://api.x.ai/v1";
-const MANTLE_API_KEY = process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || "";
+const MANTLE_API_KEY =
+  process.env.MANTLE_API_KEY || process.env.BEDROCK_MANTLE_API_KEY || process.env.AWS_BEARER_TOKEN_BEDROCK || "";
 const MANTLE_CHAT_COMPLETIONS_URL =
   process.env.MANTLE_CHAT_COMPLETIONS_URL ||
   "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions";
@@ -317,8 +318,14 @@ function renderPartForPrompt(part) {
 function recordTextForPrompt(record) {
   const content = record?.message?.content ?? record?.content;
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map(renderPartForPrompt).filter(Boolean).join("\n\n");
+  if (Array.isArray(content)) {
+    const rendered = content.map(renderPartForPrompt).filter(Boolean).join("\n\n");
+    if (rendered.length > 0) return rendered;
+  }
+  if (typeof record?.lastPrompt === "string" && record.lastPrompt.length > 0) return record.lastPrompt;
+  if (typeof record?.aiTitle === "string" && record.aiTitle.length > 0) return record.aiTitle;
+  if (typeof record?.summary === "string" && record.summary.length > 0) return record.summary;
+  return "";
 }
 
 function isToolOutputRecord(record) {
@@ -1225,7 +1232,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       rules_and_invariants: {
         type: "array",
         description:
-          "Durable user, system, project, safety, and validation rules that must survive compaction distinctly from generic narrative.",
+          "Durable live instructions and constraints that should govern future work after compaction. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain what the next agent may do. Exclude ordinary completed tasks, transient exploration notes, historical user messages, rejected ideas, and old instructions that were later superseded or removed.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1249,7 +1256,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       plans_and_task_state: {
         type: "array",
         description:
-          "Active plans, task state, benchmark state, open artifacts, open questions, blockers, and concrete next actions that should remain visible after compaction. Order active and pending work by priority.",
+          "Work-state ledger for the task, not a rule list. Include active or pending tasks, completed milestones that matter for continuation, benchmark state, open artifacts, open questions, blockers, and concrete next actions. Order active and pending work by priority. Exclude durable behavioral constraints that belong in rules_and_invariants and explicit assistant commitments that belong in promises_made.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1271,7 +1278,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       promises_made: {
         type: "array",
         description:
-          "Explicit commitments or promises made to the user that should survive compaction, including whether they are done, active, pending, blocked, superseded, or removed.",
+          "Explicit assistant commitments to the user that should survive compaction. Include promises such as 'I will run X', 'I will send Y', 'I will update/commit/push Z', or equivalent accepted commitments where the user will reasonably expect follow-through or proof. Do not infer promises from a user request alone. Exclude ordinary plans, inferred next steps, and completed work unless its promised proof/status must remain visible.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1338,12 +1345,10 @@ function createSummarySchema(recordCount = 0, options = {}) {
   return schema;
 }
 
-function createProviderSummarySchema(provider, recordCount = 0) {
+function createProviderSummarySchema(recordCount = 0) {
   return createSummarySchema(recordCount, {
     includeCompatibilityFields: false,
-    // Amazon Bedrock structured outputs reject numerical constraints such as
-    // minimum/maximum. Keep line bounds as local validation only for Mantle.
-    includeLineBounds: provider !== "mantle",
+    includeLineBounds: true,
   });
 }
 
@@ -1410,6 +1415,7 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     "- Do not copy large verbatim transcript excerpts into the JSON response. The harness will extract exact record content itself from the selected source spans.",
     "- Do not emit verbatim code/config/command blocks in summary_blocks. Summarize them and cite the exact source spans; the harness preserves verbatim evidence separately.",
     "- Bullet bodies must be a single item and must not include a leading bullet marker.",
+    "- Only records with extractable content are shown and numbered. Cite only line numbers present in the transcript below.",
     "- source_integrity.verbatim_span_grounded must be true.",
     "",
     "Compaction requirements:",
@@ -1423,10 +1429,13 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     "- Prefer block-style handoff sections over a play-by-play timeline.",
     "- A fresh agent should know the current objective, active artifacts, user preferences, domain-specific context, constraints, blockers, and next command or check.",
     "- Preserve explicit user instructions, constraints, file paths, commands, errors, pending work, and security-relevant instructions. Preserve security-relevant user constraints verbatim.",
-    "- Put durable user/system/project rules in rules_and_invariants. Do not bury them only in generic prose.",
+    "- Classify continuation state into three distinct buckets:",
+    "  - rules_and_invariants: live instructions or constraints that should govern future behavior. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain future work. Do not include completed tasks, one-off observations, generic errors, old user wording preserved only for history, or abandoned ideas.",
+    "  - plans_and_task_state: work ledger, not behavior policy. Include active/pending/done task state, benchmark status, open artifacts, blockers, open questions, and concrete next actions. Do not include durable rules or assistant promises unless the work item itself also needs tracking.",
+    "  - promises_made: explicit assistant commitments to the user. Include promised deliverables, checks, reports, commits, pushes, or follow-up actions where the user would expect proof or completion. Do not infer promises from a user request alone, and do not list ordinary internal next steps as promises.",
+    "- If the same transcript event has multiple roles, split it only when each role matters: a user constraint belongs in rules_and_invariants; the task progress belongs in plans_and_task_state; the assistant's explicit commitment belongs in promises_made.",
     "- If a later user message removes or supersedes an earlier rule, mark that rule status as removed or superseded. Do not present removed or superseded rules as live instructions.",
-    "- Put active plans, benchmark status, open artifacts, open questions, blockers, and concrete next actions in plans_and_task_state, ordered by priority.",
-    "- Put explicit commitments or promises made to the user in promises_made, with status.",
+    "- Keep removed or superseded rules only when they prevent drift or explain why a tempting older instruction is no longer live.",
     "- Preserve exact symbols, command names, endpoint paths, file names, hook names, setting names, and error text when they matter.",
     "- Do not pin irrelevant literal wording or incidental implementation details unless they are part of a contract or a current task.",
     "- Do not output a user-message inventory. The harness extracts user-authored messages deterministically from the transcript.",
@@ -1436,13 +1445,13 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats }) {
     "- The first summary_blocks items should establish, in order: current state, current user intent/constraints, active files/artifacts, unresolved work/next step. Put older background later.",
     "- When there is too much material, drop redundant intermediate exploration before dropping the final task state.",
     "- Echo the transcript sha256 exactly in source_integrity.transcript_sha256.",
-    "- Echo the logical JSONL record count in source_integrity.transcript_lines_seen.",
+    "- Echo the number of transcript records shown below in source_integrity.transcript_lines_seen.",
     "",
     "Transcript metadata:",
     "- path: " + stats.inputPath,
     "- sha256: " + stats.sha256,
     "- bytes: " + stats.bytes,
-    "- logical JSONL records: " + stats.records,
+    "- transcript records shown (citable): " + stats.records,
     "- prompt transcript renderer: " + stats.transcriptRenderer,
     "- approximate char_div_4 tokens: " + stats.approxTokens,
     "- observed user record count estimate: " + stats.userRecords,
@@ -1513,7 +1522,7 @@ function buildCodexRequestBody(promptText, stats) {
           type: "json_schema",
           strict: true,
           name: "claude_full_transcript_compaction",
-          schema: createProviderSummarySchema(PROVIDER, stats.records),
+          schema: createProviderSummarySchema(stats.records),
         },
       },
       client_metadata: {
@@ -1554,7 +1563,7 @@ function geminiThinkingConfig(model, requestedLevel) {
 function buildGeminiRequestBody(promptText, stats) {
   const generationConfig = {
     responseMimeType: "application/json",
-    responseJsonSchema: createProviderSummarySchema(PROVIDER, stats.records),
+    responseJsonSchema: createProviderSummarySchema(stats.records),
   };
   const thinkingConfig = geminiThinkingConfig(MODEL, GEMINI_THINKING_LEVEL);
   if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
@@ -1583,7 +1592,7 @@ function buildGeminiRequestBody(promptText, stats) {
 }
 
 function buildChatCompletionsRequestBody(promptText, stats) {
-  const schema = createProviderSummarySchema(PROVIDER, stats.records);
+  const schema = createProviderSummarySchema(stats.records);
   const request = {
     body: {
       model: MODEL,
@@ -1606,6 +1615,7 @@ function buildChatCompletionsRequestBody(promptText, stats) {
         type: "json_schema",
         json_schema: {
           name: "claude_full_transcript_compaction",
+          description: "Produce an evidence-grounded Claude Code transcript continuation handoff.",
           strict: true,
           schema,
         },
@@ -2421,7 +2431,23 @@ function extractRecordText(record) {
   }
   if (record.toolUseResult) return stableJson(record.toolUseResult);
   if (record.attachment) return JSON.stringify(record.attachment, null, 2);
+  if (typeof record.lastPrompt === "string" && record.lastPrompt.length > 0) return record.lastPrompt;
+  if (typeof record.aiTitle === "string" && record.aiTitle.length > 0) return record.aiTitle;
+  if (typeof record.summary === "string" && record.summary.length > 0) return record.summary;
   return "";
+}
+
+// A record is citable only if the harness can rehydrate non-empty text from it.
+// This is the single predicate that defines the model's citation space: the
+// transcript shown to the model is filtered to citable records and renumbered,
+// so the schema bound [1, N] structurally guarantees every cited span rehydrates.
+function isCitableRecord(record) {
+  return extractRecordText(record).length > 0;
+}
+
+function filterCitableTranscript(transcript) {
+  const kept = logicalJsonlLines(transcript).filter((line) => isCitableRecord(JSON.parse(line)));
+  return kept.length > 0 ? kept.join("\n") + "\n" : "";
 }
 
 function normalizeCodeText(text) {
@@ -2496,6 +2522,17 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
       const slice = records.slice(span.start_line - 1, span.end_line);
       const currentSpanId = "span-" + String(spanId).padStart(4, "0");
       const { extractedText, textSegments } = buildExtractedSpanText(slice, span.start_line);
+      if (textSegments.length === 0) {
+        throw new Error(
+          "invariant violation: citable span " +
+            currentSpanId +
+            " (lines " +
+            span.start_line +
+            "-" +
+            span.end_line +
+            ") rehydrated to empty text; the citable-transcript filter was bypassed"
+        );
+      }
       const codeCapsules = extractCodeCapsules(currentSpanId, extractedText, textSegments);
       spans.push({
         span_id: currentSpanId,
@@ -3261,7 +3298,7 @@ async function buildHandoffManifest({
         tool_output_compress_head_chars: toolOutputCompressHeadChars,
         tool_output_compress_tail_chars: toolOutputCompressTailChars,
       },
-      schema_fingerprint: sha256Text(JSON.stringify(createProviderSummarySchema(PROVIDER, stats.records))),
+      schema_fingerprint: sha256Text(JSON.stringify(createProviderSummarySchema(stats.records))),
       local_validation_schema: LOCAL_VALIDATION_SCHEMA,
       local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
       usage: usage || null,
@@ -3689,14 +3726,23 @@ async function main() {
   }
 
   const transcript = await readFile(inputPath, "utf8");
-  const records = parseJsonl(transcript);
-  const lineHashArtifacts = buildRecordArtifacts(transcript);
+  const allRecords = parseJsonl(transcript);
+  // Filter the transcript to citable records before numbering. Every record the
+  // model can cite is then guaranteed to rehydrate to non-empty text, so an
+  // empty evidence capsule is unrepresentable. records, lineHashArtifacts, and
+  // the wrapped transcript all derive from the same filtered set, keeping the
+  // line-number-as-array-index contract internally consistent.
+  const citableTranscript = filterCitableTranscript(transcript);
+  const records = parseJsonl(citableTranscript);
+  const lineHashArtifacts = buildRecordArtifacts(citableTranscript);
   const sha256 = createHash("sha256").update(transcript).digest("hex");
   const stats = {
     inputPath,
     sha256,
     bytes: Buffer.byteLength(transcript),
     records: records.length,
+    totalRecords: allRecords.length,
+    nonCitableRecords: allRecords.length - records.length,
     approxTokens: Math.ceil(transcript.length / 4),
     userRecords: countUserMessages(records),
     transcriptRenderer,
@@ -3727,7 +3773,7 @@ async function main() {
     endpoint,
     model: MODEL,
     provider_schema_fingerprint: sha256Text(
-      JSON.stringify(createProviderSummarySchema(PROVIDER, stats.records))
+      JSON.stringify(createProviderSummarySchema(stats.records))
     ),
     local_validation_schema: LOCAL_VALIDATION_SCHEMA,
     local_validation_fingerprint: sha256Text(JSON.stringify(createLocalValidationSpec())),
@@ -3849,7 +3895,7 @@ async function main() {
       throw new Error("Missing XAI_API_KEY for --provider xai");
     }
     if (PROVIDER === "mantle" && !MANTLE_API_KEY) {
-      throw new Error("Missing MANTLE_API_KEY or BEDROCK_MANTLE_API_KEY for --provider mantle");
+      throw new Error("Missing MANTLE_API_KEY, BEDROCK_MANTLE_API_KEY, or AWS_BEARER_TOKEN_BEDROCK for --provider mantle");
     }
     process.stderr.write("sending full transcript request: " + JSON.stringify(requestMeta) + "\n");
 
