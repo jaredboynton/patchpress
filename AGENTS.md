@@ -8,7 +8,7 @@
   - **gemini**: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in `.env`, mirrored from `~/.zshrc`.
   - **xai**: `XAI_API_KEY` in `.env`, mirrored from `~/.zshrc`.
   - **mantle**: `AWS_BEARER_TOKEN_BEDROCK` (or `MANTLE_API_KEY` / `BEDROCK_MANTLE_API_KEY`) in `.env`.
-  Keys live only in the gitignored `.env`; do not duplicate them in tracked files. The compaction redirect pins `--provider mantle`, so the live patch runs on the `.env` Bedrock credential.
+  Keys live only in the gitignored `.env`; do not duplicate them in tracked files. Both compaction redirects pin the flash-lite pipeline (`--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt --max-reasks 10`), so the live patch runs on the `.env` Gemini credential. The `--no-reask-until-pass --adapt-prompt --max-reasks 10` trio keeps flash-lite's density steering and reask-to-improve loop but emits the best attempt instead of hard-failing when the density gate can't be met (important for a manual `/compact` on a small conversation; the harness gate is at [compact-full-transcript.mjs:4564](file:///Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/compact-full-transcript.mjs)).
 
 ## Adding a compaction provider
 
@@ -22,10 +22,13 @@ To substitute native Anthropic API compaction in Claude Code with the custom har
 
 1. **Patcher Core** ([patch-claude.mjs](file:///Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/patcher/patch-claude.mjs)):
    - Reads the binary file using `latin1` encoding to guarantee a 1-to-1 byte-to-character mapping.
-   - Locates the target `Sel` compaction orchestrator function signature in the JS trailer using a flexible regex that handles varying destructured parameters.
-   - Calculates the exact brace boundaries of the function body.
-   - Writes a byte-aligned minified redirect payload, padded with comments to match the original body length down to the single byte.
-   - Creates a `.original` backup of the clean binary and re-signs the patched target using `codesign -f -s -`.
+   - Patches BOTH compaction paths, because Claude Code has two: autocompact reaches the shared summarizer `Sel` (deobfuscated `4408.js`); the manual `/compact` command, when the `tengu_amber_redwood3` gate is off (the default), takes the REACTIVE path and bypasses `Sel`, reaching `_kd` (deobfuscated `2774.js:83`). Patching only `Sel` leaves `/compact` on native summarization.
+     - `Sel` is located by its destructured `{messages, summaryRequest, appState, context, preCompactTokenCount, cacheSafeParams}` signature (stable property names; local var names captured dynamically). Its redirect returns an assistant message and RETHROWS on error (the autocompact runner preserves the un-compacted conversation on a throw; a mock summary would cause catastrophic context loss).
+     - `_kd` is located by the unique content marker `forkLabel:"reactive-compact"` (the bare string also lives in the bytecode string-pool, so the full key:value pairing is what disambiguates), then a backward walk to the enclosing `async function NAME(e,t,n,r){` header, validated by brace-enclosure + a `querySource:"compact"` corroboration. Its redirect reproduces `_kd`'s native result contract `{ok:true, summaryText, messages:[Ln({content:UOt(rawHandoff,...),isCompactSummary,isVisibleInTranscriptOnly})]}` using `_kd`'s own in-scope helpers (`Ln/UOt/qf/ox/MPt`, verified verbatim in the binary), feeding `UOt` the RAW `handoff.md` (not the already-wrapped `after-compact.jsonl`, which would double-wrap the preamble). On error it RETURNS `{ok:false,reason:"error"}` (the reactive caller switches on a result object, not a throw), preserving the conversation.
+   - Both redirects acquire `fs`/`child_process`/`path` through a `_gm` helper that tries `process.getBuiltinModule(...)` then falls back to bare `require(...)`. This is load-bearing and was found by live `/compact` testing: `globalThis.require` is `undefined` in the binary's CommonJS module context (the original redirect failed with "globalThis.require is not a function"), and `import.meta.require` must NOT be used because `import.meta` is ESM-only syntax that crashes the CJS module loader at startup ("Expected CommonJS module to have a function wrapper", Bun v1.4.0). The deobfuscated bundle itself obtains builtins with bare `require("fs")` etc.
+   - Calculates the exact brace boundaries of each function body and writes a byte-aligned minified redirect payload, padded with comments to match the original body length down to the single byte.
+   - Locates both anchors and validates both byte budgets up front; if either fails it aborts having written nothing (never a half-patched binary). `--dry-run` reports both anchors' body/redirect/padding sizes.
+   - Creates a `.original` backup of the clean binary and re-signs the patched target using `codesign -f -s -`. `--restore` reverts both patches in one step.
 
 2. **Launcher Shim** ([launcher-shim.mjs](file:///Users/jaredboynton/__devlocal/claudecompact-patcher/scripts/patcher/launcher-shim.mjs)):
    - Installed directly at `~/.local/bin/claude`.
