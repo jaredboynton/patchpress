@@ -1,189 +1,124 @@
-# claudecompact-patcher
+# patchpress
 
-Local experiments for replacing Claude Code compaction with an external summary path.
+**Native Claude Code compaction hands your entire session to a frontier model and hopes for a good paragraph. patchpress swaps in a cheap, fast model that cites its sources — and compacts a 595,000-token session into a 23,500-token handoff in 4.4 seconds, scoring 100/100 on structure and 10/10 on a semantic judge.**
 
-## Codex backend smoke
+What is context compaction, really? When a Claude Code session fills its window, it summarizes the older turns and continues from the summary. The native path sends the whole transcript to the main model and asks for prose. It is slow, it bills frontier-model rates every time it fires, and the result is an opaque paragraph that quietly drops the exact file paths, command flags, and decisions you needed it to keep.
 
-The first harness calls the ChatGPT Codex Responses backend using local ChatGPT auth
-from `~/.codex/auth.json`.
+So we asked a different question: what if compaction were an **extraction** problem instead of a **writing** problem? What if a small, fast, cheap model rendered the transcript densely, emitted a structured handoff that **cites exact source-line spans**, and the harness **rehydrated those spans verbatim** from the original JSONL? The model never has to remember a path correctly. It only has to point at the line the path lives on.
 
-```sh
-node scripts/codex-backend-smoke.mjs --dry-run
-node scripts/codex-backend-smoke.mjs
-```
+This repo is two things:
 
-It requests `gpt-5.4`, low reasoning, `priority` service tier, and strict JSON-schema output.
+- **patchpress** — the patcher that rewrites the Claude Code binary in place so *both* compaction triggers (automatic compaction and the manual `/compact`) run through our harness instead of the native API path.
+- **FlashHash** — the compaction *method*: the rendering, prompting, citation, rehydration, and gating stack that lets a flash-tier model beat the frontier path on fidelity, speed, and cost at the same time.
 
-## Full transcript compaction
+## TL;DR
 
-The compaction harness sends the whole source JSONL transcript in a single
-request, requires structured JSON output, and writes both the original and a
-Claude-style compacted transcript artifact into `runs/`.
+On the canonical 595,000-token benchmark transcript, the default lane — `gemini-3.1-flash-lite` with the `onto` renderer at minimal thinking — is the single best balance of quality and speed of every model and renderer tested.
 
-```sh
-node scripts/compact-full-transcript.mjs --dry-run
-node scripts/compact-full-transcript.mjs
-```
+| Metric | Value |
+| --- | --- |
+| Source transcript | **595,000 tokens** (1,066 records, 799 citable) |
+| Compacted handoff | **23,556 tokens** (~25x reduction) |
+| Wall time | **4.4 s** |
+| Deterministic structure score | **100 / 100** |
+| Semantic judge (`gpt-5.5`, 3 trials) | **10 / 10** |
+| Model | **gemini-3.1-flash-lite** — one call, minimal thinking, temp 0.4 |
+| Evidence captured | 32 verified capsules, 26 cited source lines |
 
-By default it reads
-`transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl`.
+Evidence: [`docs/benchmark.md`](docs/benchmark.md). The cheapest model on the board posts the top combined score. That is roughly an **8x speedup** over the same lane on `low` thinking (~31 s) and **20x** over `high` (~94 s), with no measured quality loss — the judge holds 10/10 across trials.
 
-By default, the model sees a stripped, line-addressed text rendering of the
-transcript rather than raw JSONL. The original JSONL is still copied into the
-run directory and used for source-span rehydration. Use
-`--transcript-renderer jsonl` only for diagnostics.
+## FlashHash: how it works
 
-The request is streamed. While it runs, the script appends live deltas to
-`runs/.../model-output.json`, writes the raw SSE stream to `runs/.../response.sse`,
-and mirrors the deltas to stderr.
+FlashHash is not one trick. It is a handful of independent techniques that compose into a pipeline where a weak model behaves like a strong one. Each stage removes a different reason a cheap model would otherwise fail. The name says the shape of it: a **flash**-tier model does the reasoning, and content-**hash**ed line spans anchor every fact back to the source.
 
-The shared compaction prompt is documented verbatim in
-`docs/shared-compaction-prompt.md`. A `pre-commit` hook keeps that file in sync
-with `buildFullTranscriptPrompt()`:
+| Stage | Technique | What it does |
+| --- | --- | --- |
+| 1. Render | **`onto`** (arXiv:2604.17512) | Schema-once, row-major, line-numbered framing of the JSONL. Declares the field layout one time, then emits one pipe-delimited metadata row per record — dropping the per-record `key=` repetition the other renderers pay. Cuts provider input tokens ~10-28% and gives the model a stable line number to cite. |
+| 2. Compress | **`headtail`** (default) / **`dspc`** (arXiv:2509.13723) | Shrinks stale tool outputs *in the rendered prompt only*. DSPC does a TF-IDF coarse filter then a multi-signal importance pick; the full JSONL is untouched, so rehydration still sees every byte. |
+| 3. Extract | **Structured handoff with span citation** | One JSON-schema-constrained call. The model writes a sectioned handoff — current work, rules and invariants, plans and task state, promises made, evidence capsules — and every claim must cite one or more exact `{start_line, end_line}` source spans. |
+| 4. Rehydrate | **Hash-anchored span rehydration** (`warp-guided-span-rehydration`) | Each source line is content-hashed up front (`line-hashes.tsv`); the harness pulls the cited spans *verbatim* from the original JSONL and renders them into the handoff. Exact file paths, flags, RPC names, and version numbers survive because the model pointed at them rather than retyping them. |
+| 5. Gate | **Density gate + reask-until-pass** | A deterministic gate counts evidence capsules and distinct cited lines. If the handoff is too thin, the harness re-asks with corrective feedback (and model-specific prompt adaptations) until it clears — or emits the best attempt rather than failing. This is what makes a flash-tier model reliably dense. |
+| 6. Score | **Two independent signals** | Every run is scored two ways that fail for different reasons (below). |
 
-```sh
-node scripts/compact-full-transcript.mjs --print-shared-prompt-markdown > docs/shared-compaction-prompt.md
-```
+The result is a handoff that is small, fast, cheap to produce, and — because the load-bearing literals are rehydrated rather than paraphrased — accurate enough to carry a real engineering project across a compaction boundary without losing the thread.
 
-### Handoff user messages
+## The two signals
 
-Each run writes a canonical handoff bundle:
+"The model wrote a plausible summary" and "the summary actually preserved the session" are two different things, and they fail for different reasons. FlashHash scores both, separately.
 
-- `handoff-state.json`: typed state with `user_intent_events`, active task
-  state, rules, promises, and verified evidence capsules.
-- `handoff-manifest.json`: artifact paths, SHA256s, authority labels,
-  sensitivity flags, provider metadata, and validation status.
-- `handoff.md`: the model-visible Markdown handoff rendered from the canonical
-  state, including a bounded verified Evidence Index for exact literal recovery
-  across repeated compactions.
+- **The deterministic gate** (`scripts/score-compaction-result.mjs`, `deterministic-compaction-score.v2`) is pure code: integrity echo, evidence-capsule count, cited-line coverage, exact-literal recovery, footprint. It cannot be charmed by good prose. The default lane scores **100/100**.
+- **The semantic judge** (`scripts/judge-compaction-result.mjs`) is `gpt-5.5` at medium reasoning, 3 trials, per-dimension median, asked whether a fresh session could actually continue the work from this handoff. The default lane scores **10/10**.
 
-`after-compact.jsonl` remains the Claude-compatible resume wrapper. Its compact
-summary record includes the rendered `handoff.md` content plus typed pointers to
-the manifest/state artifacts. The harness extracts real user-authored messages,
-collapses long messages with head/tail preservation, and carries selected
-`user_intent_events` forward across later compactions.
+A handoff has to pass both. Thin handoffs can sometimes fool the judge; verbose ones can pass structure while reading like mush. Requiring both is the whole point.
 
-Bounds:
+## patchpress: the patcher
 
-- `--handoff-user-message-limit` default `64`
-- `--handoff-user-message-token-budget` default `8000` using char/4 estimate
-- `--handoff-user-message-line-limit` default `300`
-- `--user-message-collapse-at` default `2400`
-- `--user-message-head-chars` default `900`
-- `--user-message-tail-chars` default `900`
+The method is useless in practice unless Claude Code actually calls it. patchpress makes it do so by patching the compiled binary in place.
 
-When limits are hit, priority-aware retention keeps active safety/security
-constraints, current requests, durable preferences, and correction chains before
-low-value recency. Selected messages are rendered back in chronological order.
-The sidecar `user-messages.json` records current, carried, and selected messages
-plus the applied limits. Legacy XML user-message ledgers are parsed only from
-trusted compact summary records.
+Claude Code has **two** compaction code paths, and they are easy to miss: automatic compaction reaches the shared summarizer (`Sel`), while the manual `/compact` command — with the default feature gate off — takes a separate *reactive* path (`_kd`) that bypasses `Sel` entirely. Patching only the first leaves `/compact` on native summarization. patchpress patches **both**:
 
-### Experiment gates
+- It locates each function in the binary's JS trailer (`Sel` by its destructured signature, `_kd` by the unique `forkLabel:"reactive-compact"` content marker), brace-matches the body, and overwrites it with a byte-aligned redirect padded to the exact original length.
+- Each redirect spawns the harness, reads the handoff, and reconstructs the function's native return contract so Claude Code is none the wiser.
+- It backs up the clean binary, re-signs with `codesign`, and a launcher shim re-applies the patch on every Claude Code update so it survives version bumps.
 
-The current selected default local implementation is the EXP-01 + EXP-03 +
-EXP-04 + EXP-05 + EXP-06 + EXP-07 stack:
+Validated live: a real `/compact` in a patched session compacts through the FlashHash pipeline, and the continued session reads the inserted summary correctly.
 
-- typed handoff state and manifest;
-- priority-aware user-message retention;
-- char-aware evidence capsules and fenced-code capsules;
-- provider schema split from local validation;
-- multi-round 5/10/20 no-API degradation gate;
-- deterministic scorecard for integrity, state retention, exact literals,
-  unsupported high-risk literals, and footprint.
+## Use it
 
-EXP-08/09 are implemented as gated tracks:
-
-- `--transcript-renderer sentinel` is an opt-in A/B renderer with delimiter
-  escaping, selective old tool-output compression, model-ordered handoff
-  sections, and no duplicate current-work wrapper. Current dry-run evidence
-  reduced request body size from `601,526` to `468,748` bytes, omitted
-  `137,749` model-visible chars (~`34,437` char/4 tokens), produced a `5,353`
-  token no-tail handoff, passed the `100/100` no-API scorecard, and passed the
-  live `gpt-5.5` medium-reasoning semantic judge. Live provider token
-  measurements and current routing are tracked in
-  [`docs/benchmark.md`](docs/benchmark.md).
-- Provider-native compaction endpoints are not used for the Claude handoff
-  use case. Their opaque blobs are bound to the provider/model that produced
-  them, so they cannot let a different provider/model compact a Claude session
-  into a portable handoff. The harness uses structured summaries plus local
-  state, manifests, and evidence capsules instead.
-- `scripts/judge-compaction-result.mjs` runs an advisory semantic judge through
-  the Codex Responses backend by default, using `gpt-5.5`, medium reasoning,
-  priority service tier, strict pass/fail/unknown structured output, candidate
-  hashes, and mechanically checked evidence refs. `--dry-run` still emits only
-  the request artifact, and `--from-output` validates a saved judge response.
-  Deterministic gates remain authoritative.
-
-Current no-API selected baseline: `23,022` estimated tokens in
-`after-compact.jsonl`, `50` evidence capsules, `1,850` text segments, `23` code
-capsules, and scorecard `100/100`. The 20-round no-tail degradation gate passes
-with `5,511` estimated tokens, `8` user intent events, `27` evidence capsules,
-no missing required literals, and scorecard `90/100`.
-
-## Benchmark Results
-
-The canonical current benchmark and routing recommendation is
-[`docs/benchmark.md`](docs/benchmark.md).
-
-### Gemini provider
-
-The same compaction path can use the Gemini API with structured JSON output and
-SSE streaming:
+The harness runs standalone — you do not have to patch anything to try the method.
 
 ```sh
-GEMINI_API_KEY=... node scripts/compact-full-transcript.mjs --provider gemini --dry-run
-GEMINI_API_KEY=... node scripts/compact-full-transcript.mjs --provider gemini
+# Compact a transcript with the default (winning) lane
+node scripts/compact-full-transcript.mjs \
+  --provider gemini --model gemini-3.1-flash-lite \
+  --transcript-renderer onto \
+  --input transcripts/claude-main-session-81c06368-approx-595k-tokens.jsonl \
+  --out-dir runs/demo
+
+# Score it two ways
+node scripts/score-compaction-result.mjs runs/demo     # deterministic /100
+node scripts/judge-compaction-result.mjs runs/demo     # semantic judge /10
 ```
 
-`GOOGLE_API_KEY` is also accepted and takes precedence when both key variables are set.
-The adapter calls `models/{model}:streamGenerateContent?alt=sse` with
-`generationConfig.responseMimeType = "application/json"` and `responseJsonSchema`
-so Gemini can enforce the harness JSON contract while streaming text chunks.
+Provider credentials load from a gitignored `.env` with no manual setup; `--provider` also accepts `codex`, `xai`, and `mantle` (see [`AGENTS.md`](AGENTS.md)).
 
-Defaults:
-
-- model: `gemini-3.5-flash`
-- thinking level: `none` (Flash-Lite defaults to `minimal`; see below)
-- temperature: unset (Gemini API default), except Flash-Lite defaults to `0.4`
-- max output tokens: `65536`
-
-`none` is translated per Gemini model family: Gemini 3.x Flash/Flash-Lite use
-`thinkingLevel: "minimal"` because those models do not expose full
-thinking-off; older non-thinking Flash lines omit `thinkingConfig`. Flash-Lite
-additionally defaults `GEMINI_COMPACT_THINKING_LEVEL` to `minimal` and
-temperature to `0.4` (the tuned fast-lane settings), so it runs with explicit
-minimal thinking and a low temperature without any env override.
-
-Overrides:
+To patch Claude Code itself so live sessions use it:
 
 ```sh
-GEMINI_COMPACT_MODEL=gemini-3.5-flash \
-GEMINI_COMPACT_THINKING_LEVEL=none \
-GEMINI_COMPACT_MAX_OUTPUT_TOKENS=65536 \
-node scripts/compact-full-transcript.mjs --provider gemini
+node scripts/patcher/patch-claude.mjs --dry-run    # locate both anchors, check byte budgets
+node scripts/patcher/patch-claude.mjs              # apply + codesign
+node scripts/patcher/patch-claude.mjs --restore    # revert both patches
 ```
 
-### OpenAI-compatible providers
+## When this is worth it
 
-The harness also supports xAI direct and Bedrock Mantle chat-completions
-surfaces with the same strict JSON-schema contract:
+Good fits:
 
-```sh
-XAI_API_KEY=... \
-node scripts/compact-full-transcript.mjs --provider xai --model grok-4.20-0309-non-reasoning
+- Long agent or coding sessions where losing an exact path, flag, or decision is the real cost of compaction.
+- Anyone paying frontier-model rates for compaction who would rather pay flash-tier rates for a better result.
+- Compaction or agent-memory research that wants two independent, mechanical quality signals instead of vibes.
 
-MANTLE_API_KEY=... \
-node scripts/compact-full-transcript.mjs --provider mantle --model xai.grok-4.3
+Bad fits:
+
+- Sessions short enough that native compaction is already free and fine.
+- Environments where you cannot run a local Node harness or re-sign a binary.
+- Anything that needs a provider-native opaque compaction blob (those are bound to the model that made them and cannot port a session across providers — which is exactly why FlashHash uses structured handoffs instead).
+
+## Repo map
+
+```text
+scripts/compact-full-transcript.mjs   the harness: render -> extract -> rehydrate -> gate
+scripts/patcher/patch-claude.mjs      dual-anchor binary patcher (Sel + _kd), codesign
+scripts/patcher/launcher-shim.mjs     re-applies the patch on every Claude Code update
+scripts/score-compaction-result.mjs   deterministic structure score /100
+scripts/judge-compaction-result.mjs   semantic judge /10 (gpt-5.5)
+scripts/renderer-prompt-guides.mjs    per-renderer prompt framing
+scripts/prompt-adaptation.mjs         model-specific density adaptations
+docs/benchmark.md                     canonical scored results, all models x renderers
+transcripts/                          the 595k-token benchmark source
+runs/                                 per-run artifacts (handoff.md, result.json, ...)
 ```
 
-For local Mantle benchmark runs in this repo, source the ignored `.env` first.
+## Status
 
-Provider defaults:
-
-- xAI direct: `grok-4.20-0309-non-reasoning` at `https://api.x.ai/v1/chat/completions`
-- Bedrock Mantle: `xai.grok-4.3` at `https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions`
-
-For Gemini phase-2 runs, use `gemini-3.5-flash` with minimal thinking and
-`gemini-3.1-flash-lite` with minimal thinking at temperature 0.4 (the script's
-built-in Flash-Lite defaults).
+This is a research package, not an official SDK. It patches a third-party binary and depends on the internal shape of a specific Claude Code build; updates can move the anchors. The numbers here are grounded evidence for the recorded benchmark run, not a contract. Keep a backup, test on a throwaway session first, and trust a lane only after it passes the scorer and judge on a transcript you actually care about.
