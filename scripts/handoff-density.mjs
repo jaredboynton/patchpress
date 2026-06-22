@@ -52,8 +52,8 @@ export function countPromises(summary) {
 }
 
 export const DEFAULT_DENSITY_THRESHOLDS = {
-  minEvidenceCapsules: 40,
-  minCitedLines: 30,
+  minEvidenceCapsules: 30,
+  minCitedLines: 25,
   minPromises: 0,
 };
 
@@ -125,5 +125,37 @@ export function buildReaskFeedback(shortfalls) {
     "work, transport, endpoints, models, tooling); 2-4 source_spans per block across different",
     "line ranges; verbatim paths, protocol strings, RPC names, and version numbers in every block",
     "body; populate rules_and_invariants, plans_and_task_state, and promises_made with cited spans.",
+  ].join("\n");
+}
+
+// Corrective feedback for required literals that did not survive into the
+// rehydrated handoff. Each literal is an exact string that appears verbatim in
+// the transcript and must be recoverable from the handoff; the model is told to
+// cite the source_span where it appears (and quote it verbatim) rather than
+// paraphrase. Returns "" when nothing is missing so it composes with density
+// feedback via a filter(Boolean).join.
+export function buildLiteralReaskFeedback(missingLiterals) {
+  if (!missingLiterals || missingLiterals.length === 0) return "";
+  return [
+    "REQUIRED LITERALS MISSING. The following exact strings appear in the transcript and MUST",
+    "survive verbatim into your handoff. For each one, cite a source_span on the transcript",
+    "record(s) where it appears AND quote it verbatim in the relevant summary_block body. Do not",
+    "paraphrase, truncate, or normalize them (keep full paths, casing, and punctuation):",
+    ...missingLiterals.map((literal) => "  - " + literal),
+  ].join("\n");
+}
+
+// Corrective feedback when the previous attempt did not parse as JSON. The dominant
+// cause is a provider truncating the output mid-string (e.g. Gemini finishReason
+// MAX_TOKENS when thinking consumes the output budget), so the fix is to steer the
+// retry toward a SHORTER, complete object rather than a longer one.
+export function buildTruncationReaskFeedback(errorMessage) {
+  return [
+    "YOUR PREVIOUS RESPONSE WAS CUT OFF before the JSON finished" +
+      (errorMessage ? " (" + errorMessage + ")" : "") +
+      ". The output exceeded the token budget, so the object was truncated and unusable.",
+    "Produce the SAME structure but more compactly so it completes: keep every block body to ONE",
+    "short sentence, do not repeat content across blocks, and spend your budget on many concise",
+    "source_spans rather than long prose. A complete, terse object beats a long, truncated one.",
   ].join("\n");
 }

@@ -22,6 +22,53 @@ Return strict JSON only. The JSON must match the provided schema.
 Evidence span format:
 - The transcript is wrapped as <record line="000001">...</record>.
 - Use one-based logical JSONL record numbers from those wrappers for every source span.
+
+How to read (stripped renderer):
+Each citable record is wrapped in <record line="NNNNNN" ...>. The record number is
+the integer inside the line="" attribute (zero-padded in the tag only).
+
+  <record line="000042" type="user" role="user" timestamp="2026-06-20T12:00:00.000Z">
+  Add transport capture notes here.
+  </record>
+
+  <record line="000180" type="user" role="user" timestamp="...">
+  Body may include compressed tool output with an explicit line= marker.
+  </record>
+
+Cite start_line/end_line 42 and 180 (integers). Use the line= attribute value, not XML tags.
+
+How to output (stripped renderer): anchor with source_spans on the line= attribute values.
+
+  "summary_blocks": [
+    {
+      "section": "Transport and capture",
+      "format": "bullet",
+      "body": "Working capture uses scripts/h1s_forward.py; Devin ignores HTTPS_PROXY.",
+      "source_spans": [
+        {"start_line": 42, "end_line": 44},
+        {"start_line": 180, "end_line": 182}
+      ]
+    },
+    {
+      "section": "Active artifacts",
+      "format": "bullet",
+      "body": "Docs live under /path/to/project/docs/02-transport.md and docs/03-endpoints.md.",
+      "source_spans": [{"start_line": 765, "end_line": 772}, {"start_line": 777, "end_line": 780}]
+    }
+  ],
+  "promises_made": [
+    {
+      "promise": "Document all findings in the decompile tree.",
+      "status": "done",
+      "source_spans": [{"start_line": 747, "end_line": 797}]
+    }
+  ]
+
+Emit many anchored items like the fragments above, spread across the transcript:
+- at least 8 summary_blocks, each with 2+ source_spans on different line ranges;
+- rules_and_invariants, plans_and_task_state, and promises_made each populated with spans;
+- every file path, protocol string, RPC name, and version number cited via a source_span, not copied into the body.
+Line numbers in source_spans are bare integers (42), never zero-padded strings.
 - summary_blocks is the primary structured output. It must be ordered exactly as the continuation summary should read.
 - Every summary_blocks item must include one or more source_spans pointing to the exact supporting record ranges.
 - The authoritative source record is the cited source_spans plus harness rehydration, not long verbatim body text.

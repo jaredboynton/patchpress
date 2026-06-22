@@ -2,6 +2,11 @@
   "name": "claudecompact-patcher",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "bash scripts/gate-proofs/t3-tests.sh",
+    "test:unit": "bash scripts/gate-proofs/t3-tests.sh",
+    "test:parity": "node scripts/test-provider-dry-parity.mjs"
+  },
   "dependencies": {
     "js-tiktoken": "^1.0.21"
   }

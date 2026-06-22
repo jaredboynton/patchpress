@@ -1,25 +1,27 @@
 # Top 10 Fastest 1M+ Context Models
 
-Date checked: 2026-06-20
+Date checked: 2026-06-21
 
 Criterion: sustained output throughput only, measured in output tokens per second. First-token latency is ignored. The ranking uses hosted API model/provider configurations where the exposed context window is at least 1,000,000 tokens.
+
+Pricing: list input and output USD per 1M tokens at the fastest provider in each row (standard/on-demand API tier; excludes batch, flex, and priority surcharges unless that tier is the only published price). DeepSeek input uses cache-miss rate. Gemini 3.1 Flash-Lite uses text/image/video input (audio is $0.50/M in).
 
 Provider filter: include only direct provider APIs, Wafer, or Amazon Bedrock. Exclude Azure, Nebius, Baseten, Makora, Together, Groq, Vertex, OpenRouter routing, DeepInfra, Novita, Parasail, and other third-party hosts. Bedrock is the only non-direct cloud exception.
 
 Version filter: keep the newest available version in each model line or size class. Older snapshots and preview aliases are excluded when a newer version replaces them. Benchmark numbers are from Artificial Analysis unless noted.
 
-| Rank | Model / configuration | Fastest provider | Exposed context | Output speed | Notes |
-| ---: | --- | --- | ---: | ---: | --- |
-| 1 | Gemini 3.1 Flash-Lite | Google AI Studio | 1,048,576 input / 65,536 output | 285.9 t/s | Latest Flash-Lite line; direct Google API. |
-| 2 | Grok 4.3 high | Amazon Bedrock | 1,000,000 | 229.6 t/s | Latest Grok general model line; Bedrock is allowed by exception. |
-| 3 | GLM-5.2 max | Wafer | 1,000,000+ | 219.7 t/s | Latest GLM/Z.ai line; Wafer is explicitly allowed. |
-| 4 | Grok 4.20 0309 v2 non-reasoning | xAI | 1,000,000+ | 212.1 t/s | Latest Grok 4.20 non-reasoning line; keep only if treating 4.20 as distinct from Grok 4.3. |
-| 5 | Gemini 3.5 Flash minimal | Google AI Studio | 1,048,576 input / 65,536 output | 178.8 t/s | Latest Gemini Flash line; direct Google API. |
-| 6 | GPT-4.1 nano | OpenAI | 1,047,576 | 150.8 t/s | Latest 1M nano-class GPT; Azure is faster but excluded by provider filter. |
-| 7 | Qwen3.7-Max | Alibaba Cloud | 1,000,000 | 117.4 t/s | Latest qualifying Qwen Max line; direct Alibaba provider. |
-| 8 | DeepSeek V4 Flash max | DeepSeek | 1,000,000 | 107.3 t/s | Latest DeepSeek V4 Flash line; Makora is faster but excluded. |
-| 9 | Claude Opus 4.8 | Anthropic | 1,000,000 | 68.1 t/s | Latest available Opus line; Fable/Mythos 5 are suspended. |
-| 10 | GPT-5.5 | Amazon Bedrock | 1,050,000 | 64.3 t/s | Latest GPT-5 frontier line; Bedrock is slightly faster than OpenAI direct in the benchmark. |
+| Rank | Model / configuration | Fastest provider | Exposed context | Input $/M | Output $/M | Output speed | Notes |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | Gemini 3.1 Flash-Lite | Google AI Studio | 1,048,576 input / 65,536 output | $0.25 | $1.50 | 285.9 t/s | Latest Flash-Lite line; direct Google API. |
+| 2 | Grok 4.3 high | Amazon Bedrock | 1,000,000 | $1.25 | $2.50 | 229.6 t/s | Latest Grok general model line; Bedrock is allowed by exception. |
+| 3 | GLM-5.2 max | Wafer | 1,000,000+ | $1.20 | $4.10 | 219.7 t/s | Latest GLM/Z.ai line; Wafer is explicitly allowed. |
+| 4 | Grok 4.20 0309 v2 non-reasoning | xAI | 1,000,000+ | $1.25 | $2.50 | 212.1 t/s | Latest Grok 4.20 non-reasoning line; keep only if treating 4.20 as distinct from Grok 4.3. |
+| 5 | Gemini 3.5 Flash minimal | Google AI Studio | 1,048,576 input / 65,536 output | $1.50 | $9.00 | 178.8 t/s | Latest Gemini Flash line; direct Google API. |
+| 6 | GPT-4.1 nano | OpenAI | 1,047,576 | $0.10 | $0.40 | 150.8 t/s | Latest 1M nano-class GPT; Azure is faster but excluded by provider filter. |
+| 7 | Qwen3.7-Max | Alibaba Cloud | 1,000,000 | $2.50 | $7.50 | 117.4 t/s | Latest qualifying Qwen Max line; direct Alibaba provider. |
+| 8 | DeepSeek V4 Flash max | DeepSeek | 1,000,000 | $0.14 | $0.28 | 107.3 t/s | Latest DeepSeek V4 Flash line; Makora is faster but excluded. |
+| 9 | Claude Opus 4.8 | Anthropic | 1,000,000 | $5.00 | $25.00 | 68.1 t/s | Latest available Opus line; Fable/Mythos 5 are suspended. |
+| 10 | GPT-5.5 | Amazon Bedrock | 1,050,000 | $5.50 | $33.00 | 64.3 t/s | Latest GPT-5 frontier line; Bedrock is slightly faster than OpenAI direct in the benchmark. |
 
 ## Excluded Near-Misses
 
@@ -34,6 +36,8 @@ Version filter: keep the newest available version in each model line or size cla
 - Mistral, Cohere Command, and current Kimi/Moonshot lines fail the 1M-context gate.
 
 ## Sources
+
+### Throughput
 
 - Gemini 3.1 Flash-Lite throughput: https://artificialanalysis.ai/models/gemini-3-1-flash-lite-preview/providers
 - Gemini 3.1 Flash-Lite context: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite
@@ -62,3 +66,14 @@ Version filter: keep the newest available version in each model line or size cla
 - Mistral model contexts: https://docs.mistral.ai/models/overview
 - Cohere model contexts: https://docs.cohere.com/docs/models
 - Kimi model contexts: https://platform.kimi.ai/docs/models
+
+### Pricing
+
+- Gemini API pricing (3.1 Flash-Lite, 3.5 Flash): https://ai.google.dev/gemini-api/docs/pricing
+- Amazon Bedrock pricing (Grok 4.3, GPT-5.5): https://aws.amazon.com/bedrock/pricing/
+- GLM-5.2 (max) Wafer pricing: https://artificialanalysis.ai/models/glm-5-2/providers
+- Grok 4.20 non-reasoning pricing: https://docs.x.ai/developers/models/grok-4.20-0309-non-reasoning
+- GPT-4.1 nano pricing: https://developers.openai.com/api/docs/models/gpt-4.1-nano
+- Qwen3.7-Max pricing: https://modelstudio.alibabacloud.com/
+- DeepSeek V4 Flash pricing: https://api-docs.deepseek.com/quick_start/pricing
+- Claude Opus 4.8 pricing: https://platform.claude.com/docs/en/about-claude/pricing

@@ -6,8 +6,9 @@
 //      loops) and the provider minItems enforcement reality (Bedrock 400s,
 //      Flash-Lite ignores) are RECORDED in the design doc, design-first.
 //   1. SOURCE   - the loop, density gate, best-attempt retention, corrective
-//      feedback (up to N re-requests), and the Bedrock-safe (MAX_REASKS===0)
-//      short-circuit are wired into scripts/compact-full-transcript.mjs.
+//      feedback (up to N re-requests), required-literal targeting (--fixture
+//      probes the same rehydrated text the scorer reads), and the Bedrock-safe
+//      (MAX_REASKS===0) short-circuit are wired into compact-full-transcript.mjs.
 //   2. BEHAVIOR - the density gate flags a thin handoff and clears a dense one.
 //   3. DEFAULT  - the reask plumbing is opt-in; --max-reasks 0 is the default and
 //      the provider dry-run parity gate (request bytes unchanged) still passes.
@@ -44,12 +45,19 @@ const src = readFileSync(harness, "utf8");
 console.log("1. SOURCE (scripts/compact-full-transcript.mjs):");
 check("reask loop present (up to N attempts)", /for \(let reaskAttempt = 0;/.test(src) && /reaskAttempt >= MAX_REASKS/.test(src));
 check("--reask-until-pass flag", /REASK_UNTIL_PASS/.test(src) && /--reask-until-pass/.test(src));
-check("until-pass exits when density still short", /REASK_UNTIL_PASS && MAX_REASKS > 0 && !reaskBest\.density\.pass/.test(src));
+check("flash-lite auto-enables until-pass", /FLASH_LITE_MODEL/.test(src) && /flash-lite-default/.test(src));
+check("--no-reask-until-pass opt-out", /--no-reask-until-pass/.test(src) && /REASK_UNTIL_PASS_DISABLED/.test(src));
+check("until-pass exits when density or literals still short", /REASK_UNTIL_PASS/.test(src) && /!reaskBest\.density\.pass \|\| reaskBest\.missingLiterals\.length > 0/.test(src));
 check("density gate called per attempt", /evaluateHandoffDensity\(summary, DENSITY_THRESHOLDS\)/.test(src));
-check("best attempt retained", /reaskBest = \{ summary, outputText, events, density: reaskDensity \}/.test(src));
-check("corrective feedback re-sent", /reaskFeedback = reaskDensity\.feedback/.test(src) && /reaskFeedback,/.test(src));
+check("best attempt retained (with missing-literal tracking)", /reaskBest = \{ summary, outputText, events, density: reaskDensity, missingLiterals \}/.test(src));
+check("corrective feedback re-sent (density + literals)", /reaskFeedback = \[reaskDensity\.feedback, buildLiteralReaskFeedback\(missingLiterals\)\]/.test(src) && /reaskFeedback,/.test(src));
 check("Bedrock-safe short-circuit (no schema change)", /loadedFromOutput \|\| \(MAX_REASKS === 0 && !REASK_UNTIL_PASS\)/.test(src));
 check("adapt-prompt auto-enabled with until-pass for non-codex", /REASK_UNTIL_PASS && !_promptTraits\.isStrong/.test(src));
+// Literal-targeting wiring: --fixture feeds required_literals, the loop probes the
+// same rehydrated text the scorer reads, and missing literals are named in feedback.
+check("--fixture loads required literals", /FIXTURE_PATH = argValue\("--fixture"/.test(src) && /fixtureJson\.required_literals/.test(src));
+check("literal probe reproduces scorer rehydrated text", /normalizeDerivedSummaryFields\(probeSummary\)/.test(src) && /probeSummary\.summary_markdown = renderSummaryBlocks\(probeSummary\)/.test(src) && /renderRehydratedSummary\(probeSummary, probeSpans\)/.test(src));
+check("missing literals named in corrective feedback", /buildLiteralReaskFeedback\(missingLiterals\)/.test(src));
 
 // 2. BEHAVIOR evidence (real run summaries).
 console.log("2. BEHAVIOR (density gate on real summaries):");
@@ -69,8 +77,67 @@ check(
   "capsules=" + dense.metrics.evidence_capsules + " cited=" + dense.metrics.cited_unique_lines
 );
 
-// 3. DEFAULT evidence: provider dry-run parity (request bytes unchanged at default).
-console.log("3. DEFAULT (--max-reasks 0 leaves the request byte-identical):");
+// 3. FLASH-LITE default: until-pass + adapt-prompt without an explicit flag.
+console.log("3. FLASH-LITE DEFAULT (--reask-until-pass on all renderers):");
+function dryRunMeta(args) {
+  const out = execFileSync("node", [harness, "--dry-run", ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  const start = out.indexOf("{");
+  let depth = 0;
+  let end = start;
+  for (let i = start; i < out.length; i++) {
+    if (out[i] === "{") depth++;
+    else if (out[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  return JSON.parse(out.slice(start, end)).request;
+}
+try {
+  const flashMeta = dryRunMeta([
+    "--provider",
+    "gemini",
+    "--model",
+    "gemini-3.1-flash-lite",
+    "--transcript-renderer",
+    "stripped",
+  ]);
+  check(
+    "flash-lite dry-run enables until-pass",
+    flashMeta.reask_until_pass === true && flashMeta.max_reasks === 10,
+    "source=" + flashMeta.reask_until_pass_source
+  );
+  check(
+    "flash-lite dry-run auto adapt-prompt",
+    Array.isArray(flashMeta.prompt_adaptations) && flashMeta.prompt_adaptations.length > 0,
+    "adaptations=" + (flashMeta.prompt_adaptations || []).join(",")
+  );
+  const flashOff = dryRunMeta([
+    "--provider",
+    "gemini",
+    "--model",
+    "gemini-3.1-flash-lite",
+    "--transcript-renderer",
+    "onto",
+    "--no-reask-until-pass",
+  ]);
+  check(
+    "flash-lite --no-reask-until-pass disables until-pass",
+    flashOff.reask_until_pass === false && flashOff.max_reasks === 0,
+    "max_reasks=" + flashOff.max_reasks
+  );
+} catch (e) {
+  check("flash-lite dry-run meta", false, (e.stdout || e.message || "").toString().trim().split("\n").pop());
+}
+
+// 4. DEFAULT evidence: provider dry-run parity (request bytes unchanged at default).
+console.log("4. DEFAULT (--max-reasks 0 leaves the request byte-identical):");
 try {
   const parity = execFileSync("node", [resolve(repoRoot, "scripts/test-provider-dry-parity.mjs")], {
     cwd: repoRoot,
@@ -81,8 +148,8 @@ try {
   check("provider dry-run parity", false, (e.stdout || e.message || "").toString().trim().split("\n").pop());
 }
 
-// 4. RUNTIME evidence: both formerly-failing lanes clear the gate with reasks.
-console.log("4. RUNTIME (both formerly-failing lanes with --max-reasks 2):");
+// 5. RUNTIME evidence: both formerly-failing lanes clear the gate with reasks.
+console.log("5. RUNTIME (both formerly-failing lanes with --max-reasks 2):");
 function score(run) {
   const out = execFileSync("node", [resolve(repoRoot, "scripts/score-compaction-result.mjs"), resolve(repoRoot, "runs", run)], {
     cwd: repoRoot,

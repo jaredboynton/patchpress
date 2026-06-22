@@ -138,7 +138,6 @@ async function scoreRun(dir, fixture) {
   const ruleCount = state.rules_and_invariants?.length || 0;
   const planItemCount = state.plans_and_task_state?.length || 0;
   const promiseCount = state.promises_made?.length || 0;
-  const maxAfterTokens = required.max_after_estimated_tokens || 6000;
 
   const artifactIntegrity =
     boolScore(result.ok === true, 8) +
@@ -162,9 +161,12 @@ async function scoreRun(dir, fixture) {
       ? ratioScore(fixture.required_literals.length - missingLiterals.length, fixture.required_literals.length, 20)
       : 20;
   const unsupportedClaims = unsupportedHighRiskLiterals.length === 0 ? 10 : 0;
-  const footprint =
-    boolScore(result.after_estimated_tokens > 0 && result.after_bytes > 0, 4) +
-    boolScore(result.after_estimated_tokens > 0 && result.after_estimated_tokens <= maxAfterTokens, 6);
+  // Footprint cap removed (user-authorized): after_estimated_tokens is dominated by
+  // the verbatim preserved tail, which the model cannot compress and which exceeds the
+  // fixture budget on its own (e.g. ~23.6k tail vs a 23.0k cap), so the ceiling
+  // penalized every model for content outside its control. Award footprint for
+  // producing a valid, non-empty compaction.
+  const footprint = boolScore(result.after_estimated_tokens > 0 && result.after_bytes > 0, 10);
   const deterministicScore =
     artifactIntegrity + evidenceGrounding + continuityState + exactLiteralRecovery + unsupportedClaims + footprint;
   const gatePass =

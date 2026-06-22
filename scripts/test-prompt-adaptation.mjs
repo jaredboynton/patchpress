@@ -39,13 +39,13 @@ check("raw cited findings provenance saved", nFindings >= 20, nFindings + " find
 console.log("1. SOURCE (scripts/compact-full-transcript.mjs):");
 const src = readFileSync(resolve(repoRoot, "scripts/compact-full-transcript.mjs"), "utf8");
 check("--adapt-prompt flag", /--adapt-prompt/.test(src) && /ADAPT_PROMPT =/.test(src));
-check("buildPromptAdaptations imported + called", /import \{ buildPromptAdaptations, modelTraits \}/.test(src) && /buildPromptAdaptations\(\{ provider: PROVIDER, model: MODEL \}\)/.test(src));
+check("buildPromptAdaptations imported + called with renderer", /import \{ buildPromptAdaptations, modelTraits \}/.test(src) && /buildPromptAdaptations\(\{\s*provider: PROVIDER,\s*model: MODEL,\s*renderer: transcriptRenderer,/.test(src));
 check("adaptation lines appended to prompt", /adaptationLines: ADAPT_PROMPT \? promptAdaptation\.lines : \[\]/.test(src) && /MODEL-SPECIFIC COMPLETENESS REQUIREMENTS/.test(src));
 
 // 2. DISPATCH dynamic per provider/model.
 console.log("2. DISPATCH (dynamic per provider/model):");
-function applied(provider, model) {
-  return buildPromptAdaptations({ provider, model }).applied;
+function applied(provider, model, renderer) {
+  return buildPromptAdaptations({ provider, model, renderer }).applied;
 }
 function expect(label, got, mustInclude, mustExclude) {
   const ok = mustInclude.every((id) => got.includes(id)) && mustExclude.every((id) => !got.includes(id));
@@ -59,6 +59,11 @@ expect("mantle/grok-4.3", applied("mantle", "xai.grok-4.3"),
   ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "bedrock-count-floor", "xai-mine-transcript"], ["gemini-density-steer"]);
 expect("flash-lite", applied("gemini", "gemini-3.1-flash-lite"),
   ["sectional-handoff-shape", "enumerate-not-summarize", "nonreasoning-decompose", "gemini-density-steer"], ["bedrock-count-floor", "xai-mine-transcript"]);
+// Renderer-gated: the onto capsule floor fires only for flash-lite + onto.
+expect("flash-lite onto (capsule floor)", applied("gemini", "gemini-3.1-flash-lite", "onto"),
+  ["sectional-handoff-shape", "nonreasoning-decompose", "gemini-density-steer", "flash-lite-onto-capsule-floor"], ["bedrock-count-floor"]);
+expect("flash-lite stripped (no capsule floor)", applied("gemini", "gemini-3.1-flash-lite", "stripped"),
+  ["sectional-handoff-shape", "nonreasoning-decompose", "gemini-density-steer"], ["flash-lite-onto-capsule-floor"]);
 expect("xai/grok-4.20-non-reasoning", applied("xai", "grok-4.20-0309-non-reasoning"),
   ["sectional-handoff-shape", "xai-mine-transcript", "nonreasoning-decompose"], ["bedrock-count-floor", "gemini-density-steer"]);
 
