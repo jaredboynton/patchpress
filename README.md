@@ -1,6 +1,8 @@
 # patchpress
 
-**Native Claude Code compaction hands your entire session to a frontier model and hopes for a good paragraph. patchpress swaps in a cheap, fast model that cites its sources — and compacts a 595,000-token session into a 23,500-token handoff in 4.4 seconds, scoring 100/100 on structure and 10/10 on a semantic judge.**
+**Native Claude Code compaction hands your entire session to a frontier model for compaction. It's slow. It's expensive. 
+
+Patchpress swaps in a cheap, fast model that cites its sources, preserves a perfect narrative, and uses hashed extraction of verbatim sections — and can compact by 20x in roughly ~0.75s per 100k of pre-compact tokens.**
 
 What is context compaction, really? When a Claude Code session fills its window, it summarizes the older turns and continues from the summary. The native path sends the whole transcript to the main model and asks for prose. It is slow, it bills frontier-model rates every time it fires, and the result is an opaque paragraph that quietly drops the exact file paths, command flags, and decisions you needed it to keep.
 
