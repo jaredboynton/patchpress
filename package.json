@@ -1,8 +1,22 @@
 {
   "name": "patchpress",
-  "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
+  "description": "Fast cheap cited compaction for Claude Code via a stable in-place binary patch and a flash-tier citation+rehydration pipeline.",
+  "license": "MIT",
   "type": "module",
+  "bin": {
+    "patchpress": "scripts/cli.mjs"
+  },
+  "main": "scripts/compact-full-transcript.mjs",
+  "files": [
+    "scripts/",
+    "references/",
+    "AGENTS.md",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "bash scripts/gate-proofs/t3-tests.sh",
     "test:unit": "bash scripts/gate-proofs/t3-tests.sh",
@@ -10,5 +24,8 @@
   },
   "dependencies": {
     "js-tiktoken": "^1.0.21"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

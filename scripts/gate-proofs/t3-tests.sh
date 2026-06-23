@@ -12,3 +12,7 @@ echo "### handoff user-message + citable-filter tests:"
 node scripts/test-handoff-user-messages.mjs
 echo "### patcher anchor + dynamic helper-resolution test:"
 node scripts/test-patcher-anchors.mjs
+echo "### stable indirection shim test:"
+node scripts/test-shim.mjs
+echo "### CLI + installer syntax:"
+node --check scripts/cli.mjs && node --check scripts/install.mjs && echo "  cli + install syntax OK (exit 0)"

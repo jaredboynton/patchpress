@@ -87,9 +87,24 @@ Provider credentials load from a gitignored `.env` with no manual setup; `--prov
 To patch Claude Code itself so live sessions use it:
 
 ```sh
-node scripts/patcher/patch-claude.mjs --dry-run    # locate both anchors, check byte budgets
-node scripts/patcher/patch-claude.mjs              # apply + codesign
-node scripts/patcher/patch-claude.mjs --restore    # revert both patches
+# Easiest: install via npm (installs the stable shim + config + patches the latest Claude)
+npx patchpress install
+
+# Or from this repo:
+node scripts/cli.mjs install                # install shim + config + patch
+node scripts/cli.mjs patch --dry-run        # locate both anchors, check byte budgets
+node scripts/cli.mjs patch                  # apply + codesign
+node scripts/cli.mjs restore                # revert both patches
+```
+
+The redirect baked into the binary calls a **stable indirection shim** at `~/.local/share/patchpress/run-compact.mjs`, which reads the current lane (provider/model/renderer) from `~/.local/share/patchpress/config.json` and execs the latest compaction script from the installed `patchpress` package. So you can swap the lane by editing `config.json`, or update the harness by running `npm update -g patchpress` — **without re-patching the binary**. Script body edits, model swaps, and renderer changes all flow through the shim.
+
+```sh
+# Edit the lane without re-patching:
+$EDITOR ~/.local/share/patchpress/config.json
+
+# Update the harness to the latest published version:
+npm update -g patchpress
 ```
 
 ## When this is worth it
@@ -109,16 +124,20 @@ Bad fits:
 ## Repo map
 
 ```text
-scripts/compact-full-transcript.mjs   the harness: render -> extract -> rehydrate -> gate
-scripts/patcher/patch-claude.mjs      dual-anchor binary patcher (Sel + _kd), codesign
-scripts/patcher/launcher-shim.mjs     re-applies the patch on every Claude Code update
-scripts/score-compaction-result.mjs   deterministic structure score /100
-scripts/judge-compaction-result.mjs   semantic judge /10 (gpt-5.5)
-scripts/renderer-prompt-guides.mjs    per-renderer prompt framing
-scripts/prompt-adaptation.mjs         model-specific density adaptations
-docs/benchmark.md                     canonical scored results, all models x renderers
-transcripts/                          the 595k-token benchmark source
-runs/                                 per-run artifacts (handoff.md, result.json, ...)
+scripts/cli.mjs                      patchpress CLI: install / patch / restore / compact
+scripts/install.mjs                  installs the stable shim + config + patches the binary
+scripts/compact-full-transcript.mjs  the harness: render -> extract -> rehydrate -> gate
+scripts/patcher/patch-claude.mjs     dual-anchor binary patcher (Sel + _kd), codesign
+scripts/patcher/run-compact.mjs      STABLE INDIRECTION SHIM (the one path baked into the binary)
+scripts/patcher/launcher-shim.mjs    re-applies the patch on every Claude Code update
+scripts/score-compaction-result.mjs  deterministic structure score /100
+scripts/judge-compaction-result.mjs  semantic judge /10 (gpt-5.5)
+scripts/renderer-prompt-guides.mjs   per-renderer prompt framing
+scripts/prompt-adaptation.mjs        model-specific density adaptations
+.github/workflows/ci.yml             CI: test gate on push, auto-publish to npm on tag
+docs/benchmark.md                    canonical scored results, all models x renderers
+transcripts/                         the 595k-token benchmark source
+runs/                                per-run artifacts (handoff.md, result.json, ...)
 ```
 
 ## Status

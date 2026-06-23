@@ -4,25 +4,22 @@ import { execSync } from "child_process";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 
-// Absolute path to the external compaction script, derived from this file's
-// location (repo-portable). patch-claude.mjs lives in scripts/patcher/, so the
-// compaction script is one directory up.
-const compactScript = resolve(dirname(fileURLToPath(import.meta.url)), "../compact-full-transcript.mjs");
-
-// The compaction pipeline both redirects invoke. This is the flash-lite config
-// that benchmarked best (gemini-3.1-flash-lite + onto renderer). The gemini
-// credential (GEMINI_API_KEY/GOOGLE_API_KEY) is auto-loaded from the repo .env
-// by the compaction script, so behavior does not depend on its default provider.
+// STABLE INDIRECTION SHIM path. This is the ONE path baked into the patched
+// binary. The shim (~/.local/share/patchpress/run-compact.mjs) reads the lane
+// (provider/model/renderer/flags) from config.json and execs the LATEST
+// compaction script from the globally-installed patchpress npm package. This
+// decouples the binary patch (rare, version-locked) from the compaction script
+// + lane args (volatile): script body edits, model swaps, and renderer changes
+// all flow through the shim with ZERO re-patches.
 //
-// `--adapt-prompt` keeps the model-specific density steering that flash-lite
-// needs; `--no-reask-until-pass --max-reasks 10` keeps the reask-to-improve loop
-// (it breaks early once the density gate passes) but EMITS the best attempt
-// instead of hard-failing when the gate can't be met. That matters for a manual
-// /compact run on a conversation too small to hit the density floor: it would
-// otherwise loop and exit non-zero, surfacing an error and compacting nothing.
-// Best-effort emit produces a real (if thin) summary -- never a mock. (See the
-// harness gate at compact-full-transcript.mjs:4564.)
-const PIPELINE_ARGS = "--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt --max-reasks 10";
+// The shim + config.json are installed by `patchpress install`
+// (scripts/install.mjs). Override this path at patch time with the
+// CLAUDE_COMPACT_SHIM env var (for testing or non-standard layouts).
+const compactShim = process.env.CLAUDE_COMPACT_SHIM || join(homedir(), ".local/share/patchpress/run-compact.mjs");
+
+// Lane args are NO LONGER baked into the redirect — the shim reads them from
+// config.json at /compact time. The default lane lives in the shim as a fallback
+// and is written to config.json by `patchpress install`. See AGENTS.md.
 
 // Helper to expand tilde in paths
 function expandTilde(pathStr) {
@@ -112,7 +109,7 @@ export function padRedirect(redirectCode, bodyByteLength, label) {
 // wasCompacted:true and REPLACES the whole conversation with the mock text
 // (catastrophic context loss).
 function buildSelRedirect(messagesVar) {
-  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactScript} ${PIPELINE_ARGS} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;if(!summaryText)throw new Error("redirect: empty summary text from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0},model="compact";try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage;if(resultObj.model)model=resultObj.model}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:model,content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch Sel] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
+  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;if(!summaryText)throw new Error("redirect: empty summary text from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0},model="compact";try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage;if(resultObj.model)model=resultObj.model}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:model,content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch Sel] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
 }
 
 // REACTIVE path (manual /compact): the reactive-compact summarizer `_kd`. Unlike
@@ -139,7 +136,7 @@ function buildSelRedirect(messagesVar) {
 // MUST NOT be hardcoded.
 function buildKdRedirect(messagesVar, ctxVar, helpers) {
   const { wrap, preamble, live, replchk, replnote } = helpers;
-  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactScript} ${PIPELINE_ARGS} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=${live}(),u=${replchk}()&&${replnote}(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${wrap}({content:${preamble}(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
+  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=${live}(),u=${replchk}()&&${replnote}(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${wrap}({content:${preamble}(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
 }
 
 // Resolve the 5 minified in-scope helper names from `_kd`'s native success-return
