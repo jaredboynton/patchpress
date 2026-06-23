@@ -74,7 +74,7 @@ function findCloseBrace(content, openBraceIndex) {
 // Pad a redirect to occupy EXACTLY bodyByteLength bytes so the patch is
 // byte-aligned (the binary's offsets are preserved). Throws (with the anchor
 // label) if the redirect does not fit.
-function padRedirect(redirectCode, bodyByteLength, label) {
+export function padRedirect(redirectCode, bodyByteLength, label) {
   const redirectByteLength = Buffer.from(redirectCode, "utf8").length;
   if (redirectByteLength > bodyByteLength) {
     throw new Error(
@@ -124,17 +124,43 @@ function buildSelRedirect(messagesVar) {
 // preserving the un-compacted conversation (the correct non-destructive failure).
 //
 // The success return reproduces _kd's EXACT native contract using its own
-// in-scope helpers (verified verbatim in the binary's JS trailer 2773.js:253 /
-// 5189.js:227): UOt(rawSummary,!0,qf(),void 0,ox()&&MPt(...)) prepends the
-// continuation preamble, the live transcript path (qf()), and the REPL-cleared
-// note, then Ln wraps it into the isCompactSummary user message. We feed UOt the
-// RAW handoff.md (= native `l`), NOT the harness's after-compact.jsonl line[1]
-// (which is already UOt-wrapped -- feeding that back through UOt would
-// double-wrap the preamble). forkAssistantMessageCount is a safe literal 1 (DRn
-// forwards it for telemetry only). ctxVar is _kd's 2nd param (carries
-// toolUseContext); messagesVar is its 1st (the messages array).
-function buildKdRedirect(messagesVar, ctxVar) {
-  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactScript} ${PIPELINE_ARGS} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=qf(),u=ox()&&MPt(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[Ln({content:UOt(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
+// in-scope helpers (verified verbatim in the binary's JS trailer): the native
+// epilogue is `wrap({content:preamble(l,!0,live(),void 0,replchk()&&replnote(...))})`,
+// which prepends the continuation preamble, the live transcript path (live()),
+// and the REPL-cleared note, then wraps it into the isCompactSummary user
+// message. We feed `preamble` the RAW handoff.md (= native `l`), NOT the
+// harness's after-compact.jsonl line[1] (which is already preamble-wrapped --
+// feeding that back through preamble would double-wrap). forkAssistantMessageCount
+// is a safe literal 1 (the caller forwards it for telemetry only). ctxVar is
+// _kd's 2nd param (carries toolUseContext); messagesVar is its 1st (the messages
+// array). `helpers` carries the 5 minified helper names resolved dynamically
+// from this version's epilogue (resolveKdHelpers) -- they drift every release
+// (e.g. qf->Lm, ox->hw, MPt->zLt, UOt->XMt across 2.1.185->2.1.186), so they
+// MUST NOT be hardcoded.
+function buildKdRedirect(messagesVar, ctxVar, helpers) {
+  const { wrap, preamble, live, replchk, replnote } = helpers;
+  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactScript} ${PIPELINE_ARGS} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=${live}(),u=${replchk}()&&${replnote}(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${wrap}({content:${preamble}(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
+}
+
+// Resolve the 5 minified in-scope helper names from `_kd`'s native success-return
+// epilogue. The epilogue STRUCTURE is stable across versions; only the names drift.
+// Two regexes pin all 5 by their surrounding literal syntax:
+//   messages:[WRAP({content:PREAMBLE(summaryVar,!0,cVar,void 0,uVar)
+//   cVar=LIVE(),uVar=REPLCHK()&&REPLNOTE(CTX.toolUseContext.getReplContexts(),CTX.toolUseContext.agentId)
+// Throws (labeled) if either fails, so the whole patch aborts fail-closed rather
+// than re-injecting stale names. Returns {wrap,preamble,live,replchk,replnote}.
+function resolveKdHelpers(body) {
+  const wrapRe = /messages:\[([A-Za-z0-9_$]+)\(\{content:([A-Za-z0-9_$]+)\([A-Za-z0-9_$]+,!0,[A-Za-z0-9_$]+,void 0,[A-Za-z0-9_$]+\)/;
+  const replRe = /=([A-Za-z0-9_$]+)\(\),[A-Za-z0-9_$]+=([A-Za-z0-9_$]+)\(\)&&([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\.toolUseContext\.getReplContexts\(\),\4\.toolUseContext\.agentId\)/;
+  const wm = body.match(wrapRe);
+  if (!wm) {
+    throw new Error("[_kd] could not resolve native message-wrap/preamble helpers from the success-return epilogue (minified layout changed)");
+  }
+  const rm = body.match(replRe);
+  if (!rm) {
+    throw new Error("[_kd] could not resolve native live/repl helpers from the success-return epilogue (minified layout changed)");
+  }
+  return { wrap: wm[1], preamble: wm[2], live: rm[1], replchk: rm[2], replnote: rm[3] };
 }
 
 // --- Anchor locators ------------------------------------------------------
@@ -144,7 +170,7 @@ function buildKdRedirect(messagesVar, ctxVar) {
 // PRIMARY: `Sel` — anchored on its destructured signature. The property names
 // (messages, summaryRequest, ...) are stable across versions; the local var
 // names are captured dynamically.
-function locateSel(content) {
+export function locateSel(content) {
   const regex = /async\s+function\s+([a-zA-Z0-9_$]+)\s*\(\{\s*messages\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*summaryRequest\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*appState\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*context\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*preCompactTokenCount\s*:\s*([a-zA-Z0-9_$]+)\s*,\s*cacheSafeParams\s*:\s*([a-zA-Z0-9_$]+)(?:,[^}]+)?\}\)\s*\{/;
   const match = content.match(regex);
   if (!match) {
@@ -170,7 +196,7 @@ function locateSel(content) {
 // key:value pairing is what disambiguates), then walk back to the enclosing
 // `async function NAME(a,b,c,d){` header and validate the body encloses the
 // marker and contains querySource:"compact".
-function locateKd(content) {
+export function locateKd(content) {
   const marker = 'forkLabel:"reactive-compact"';
   const markerIdx = content.indexOf(marker);
   if (markerIdx === -1) {
@@ -196,18 +222,25 @@ function locateKd(content) {
     if (!(openBraceIndex < markerIdx && markerIdx < closeBraceIndex)) continue;
     const body = content.slice(openBraceIndex, closeBraceIndex);
     if (!/querySource\s*:\s*["']compact["']/.test(body)) continue;
+    const helpers = resolveKdHelpers(body);
     return {
       label: "_kd",
       name: h[1],
       openBraceIndex,
       bodyByteLength: closeBraceIndex - openBraceIndex - 1,
-      redirectCode: buildKdRedirect(h[2], h[3]),
+      redirectCode: buildKdRedirect(h[2], h[3], helpers),
+      helpers,
     };
   }
   throw new Error("[_kd] could not resolve the enclosing reactive-compact function body");
 }
 
 // --- Main -----------------------------------------------------------------
+
+// Run the CLI only when invoked directly (node patch-claude.mjs ...), not when
+// imported by a test/module. process.argv[1] is the entrypoint script path.
+const isRunDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isRunDirectly) {
 
 // Argument parsing
 const args = process.argv.slice(2);
@@ -310,6 +343,11 @@ if (dryRun) {
     console.log(
       `  ${a.label} (${a.name}): body=${a.bodyByteLength}B redirect=${a.redirectByteLength}B pad=${a.bodyByteLength - a.redirectByteLength}B -> fits`,
     );
+    if (a.helpers) {
+      console.log(
+        `    resolved helpers: wrap=${a.helpers.wrap} preamble=${a.helpers.preamble} live=${a.helpers.live} replchk=${a.helpers.replchk} replnote=${a.helpers.replnote}`,
+      );
+    }
   }
   process.exit(0);
 }
@@ -337,4 +375,6 @@ try {
   }
 } catch (e) {
   console.warn("Patched binary written, but codesign command failed. Binary may need manual signing.");
+}
+
 }
