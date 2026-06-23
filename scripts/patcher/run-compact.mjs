@@ -31,7 +31,7 @@ const LOG_PATH = "/tmp/claude-compact.log";
 // Default winning lane (kept in sync with AGENTS.md). Used when config.json is
 // missing or doesn't override. A package update can ship a new default by
 // re-running `patchpress install` (which regenerates config.json idempotently).
-const DEFAULT_LANE = "--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt --max-reasks 10";
+const DEFAULT_LANE = "--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt";
 
 function logErr(msg) {
   try { appendFileSync(LOG_PATH, msg + "\n"); } catch (_) {}

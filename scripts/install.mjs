@@ -28,7 +28,7 @@ const CONFIG_DEST = join(SHIM_DIR, "config.json");
 const SHIM_SRC = join(__dirname, "patcher", "run-compact.mjs");
 const PATCHER = join(__dirname, "patcher", "patch-claude.mjs");
 
-const DEFAULT_LANE = "--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt --max-reasks 10";
+const DEFAULT_LANE = "--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt";
 
 function latestClaudeBinary(versionsDir) {
   const dir = versionsDir || join(homedir(), ".local/share/claude/versions");
