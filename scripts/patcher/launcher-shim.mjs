@@ -29,8 +29,11 @@ try {
   console.error("Warning: Failed to scan versions directory: " + e.message);
 }
 
+// No version resolved: fall back to the Claude-managed symlink, which the
+// updater keeps pointing at the newest installed version. (Never assume a
+// hardcoded version number; those go stale on every Claude Code release.)
 if (!activeBinary) {
-  activeBinary = join(homedir(), ".local/share/claude/versions/2.1.185");
+  activeBinary = join(homedir(), ".local/bin/claude");
 }
 
 // Check if patched
@@ -48,9 +51,20 @@ try {
 
 if (needsPatch && existsSync(activeBinary)) {
   try {
-    const patcherPath = join(dirname(fileURLToPath(import.meta.url)), "patch-claude.mjs");
-    if (existsSync(patcherPath)) {
-      execSync("node " + patcherPath + " " + activeBinary, { stdio: "ignore" });
+    // Prefer the globally-installed patchpress (the published source of truth),
+    // falling back to the patcher sibling for dev/git-pull use.
+    let patcherPath = null;
+    try {
+      const g = execSync("npm root -g", { encoding: "utf8" }).trim();
+      const cand = join(g, "patchpress", "scripts", "patcher", "patch-claude.mjs");
+      if (existsSync(cand)) patcherPath = cand;
+    } catch (_) {}
+    if (!patcherPath) {
+      const sibling = join(dirname(fileURLToPath(import.meta.url)), "patch-claude.mjs");
+      if (existsSync(sibling)) patcherPath = sibling;
+    }
+    if (patcherPath) {
+      execSync("node " + JSON.stringify(patcherPath) + " " + JSON.stringify(activeBinary), { stdio: "ignore" });
     }
   } catch (err) {
     console.error("Warning: Failed to apply compaction patch, running unpatched binary: " + err.message);

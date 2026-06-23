@@ -14,5 +14,7 @@ echo "### patcher anchor + dynamic helper-resolution test:"
 node scripts/test-patcher-anchors.mjs
 echo "### stable indirection shim test:"
 node scripts/test-shim.mjs
-echo "### CLI + installer syntax:"
-node --check scripts/cli.mjs && node --check scripts/install.mjs && echo "  cli + install syntax OK (exit 0)"
+echo "### managed ~/bin/claude launcher test:"
+node scripts/test-wrapper.mjs
+echo "### CLI + installer + launcher-shim syntax:"
+node --check scripts/cli.mjs && node --check scripts/install.mjs && node --check scripts/patcher/launcher-shim.mjs && echo "  cli + install + launcher syntax OK (exit 0)"
