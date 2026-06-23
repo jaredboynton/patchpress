@@ -15,7 +15,7 @@
 // launcher-shim.mjs is available for ~/.local/bin/claude if the user wants
 // auto-patch-on-launch.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -27,13 +27,16 @@ const SHIM_DEST = join(SHIM_DIR, "run-compact.mjs");
 const CONFIG_DEST = join(SHIM_DIR, "config.json");
 const SHIM_SRC = join(__dirname, "patcher", "run-compact.mjs");
 const PATCHER = join(__dirname, "patcher", "patch-claude.mjs");
+// This package's own compaction script. Recorded as config.scriptPath so a fresh
+// npm install resolves it directly (the shim cannot resolve the patchpress package
+// from ~/.local/share/patchpress/, which is outside any node_modules tree).
+const SCRIPT_SRC = join(__dirname, "compact-full-transcript.mjs");
 
 const DEFAULT_LANE = "--provider gemini --model gemini-3.1-flash-lite --transcript-renderer onto --no-reask-until-pass --adapt-prompt";
 
 function latestClaudeBinary(versionsDir) {
   const dir = versionsDir || join(homedir(), ".local/share/claude/versions");
   if (!existsSync(dir)) return null;
-  const { readdirSync } = require0("node:fs");
   const versions = readdirSync(dir).filter((f) => /^\d+\.\d+\.\d+$/.test(f));
   if (!versions.length) return null;
   versions.sort((a, b) => {
@@ -45,22 +48,15 @@ function latestClaudeBinary(versionsDir) {
   return join(dir, versions[0]);
 }
 
-function require0(mod) {
-  try { return createRequire0()(mod); } catch (_) { return import.meta.resolve(mod); }
-}
-// Minimal createRequire shim — avoids a dependency on module/createRequire.
-function createRequire0() {
-  // eslint-disable-next-line no-eval
-  const m = eval("require");
-  return m;
-}
-
 function writeConfig(reset) {
   let existing = null;
   if (!reset) {
     try { existing = JSON.parse(readFileSync(CONFIG_DEST, "utf8")); } catch (_) {}
   }
-  const cfg = Object.assign({ lane: DEFAULT_LANE }, existing || {});
+  // Default scriptPath to this package's own compaction script so a fresh npm
+  // install works standalone; an existing config (e.g. a dev/git-pull override)
+  // wins via the merge order below.
+  const cfg = Object.assign({ lane: DEFAULT_LANE, scriptPath: SCRIPT_SRC }, existing || {});
   writeFileSync(CONFIG_DEST, JSON.stringify(cfg, null, 2) + "\n");
   return cfg;
 }
