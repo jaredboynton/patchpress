@@ -50,7 +50,7 @@ jobs:
           CI: "true"
 
   publish:
-    name: Publish to npm
+    name: Publish to npm (trusted publishing / OIDC)
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -63,8 +63,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
+
+      - name: Ensure npm CLI supports trusted publishing (>= 11.5.1)
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm ci
@@ -72,7 +75,11 @@ jobs:
       - name: Verify package contents
         run: npm pack --dry-run
 
+      # Trusted publishing: GitHub proves this workflow's identity to npm via a
+      # short-lived OIDC JWT; npm issues a single-use publish credential. No
+      # NPM_TOKEN, no NODE_AUTH_TOKEN, no long-lived secret to rotate. Requires
+      # a one-time trust config at https://www.npmjs.com/package/patchpress/access
+      # (owner=jaredboynton, repo=patchpress, workflow=ci.yml). Provenance is
+      # auto-generated; publishConfig.provenance:true makes intent explicit.
       - name: Publish
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

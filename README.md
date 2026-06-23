@@ -134,11 +134,15 @@ scripts/score-compaction-result.mjs  deterministic structure score /100
 scripts/judge-compaction-result.mjs  semantic judge /10 (gpt-5.5)
 scripts/renderer-prompt-guides.mjs   per-renderer prompt framing
 scripts/prompt-adaptation.mjs        model-specific density adaptations
-.github/workflows/ci.yml             CI: test gate on push, auto-publish to npm on tag
+.github/workflows/ci.yml             CI: test gate on push; publish to npm on tag (trusted publishing / OIDC, no token)
 docs/benchmark.md                    canonical scored results, all models x renderers
 transcripts/                         the 595k-token benchmark source
 runs/                                per-run artifacts (handoff.md, result.json, ...)
 ```
+
+## Releases
+
+Published to npm as [`patchpress`](https://www.npmjs.com/package/patchpress). New versions cut on `v*` tags publish from CI via **npm trusted publishing** (OIDC): GitHub proves the workflow's identity to npm, npm issues a single-use publish credential, and the package ships with automatic provenance attestations. There is no long-lived `NPM_TOKEN` to rotate or leak. One-time trust config links `jaredboynton/patchpress` + workflow `ci.yml` on the [package access page](https://www.npmjs.com/package/patchpress/access).
 
 ## Status
 

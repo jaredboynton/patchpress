@@ -1,6 +1,6 @@
 {
   "name": "patchpress",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Fast cheap cited compaction for Claude Code via a stable in-place binary patch and a flash-tier citation+rehydration pipeline.",
   "license": "MIT",
   "type": "module",
@@ -8,6 +8,10 @@
     "patchpress": "scripts/cli.mjs"
   },
   "main": "scripts/compact-full-transcript.mjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaredboynton/patchpress.git"
+  },
   "files": [
     "scripts/",
     "references/",
@@ -15,7 +19,8 @@
     "README.md"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "test": "bash scripts/gate-proofs/t3-tests.sh",
