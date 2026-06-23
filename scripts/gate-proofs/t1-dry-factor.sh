@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-cd /Users/jaredboynton/__devlocal/claudecompact-patcher
+cd "$(dirname "$0")/../.."
 echo "## CLAIM: provider dispatch collapsed into a single registry table; dry-factor lowered from 89."
 echo
 echo "### PROVIDER_REGISTRY single table definition (the one edit site to add a provider):"

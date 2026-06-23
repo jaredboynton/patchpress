@@ -1901,7 +1901,7 @@ function buildCodexRequestBody(promptText, stats) {
       stream: true,
       include: ["reasoning.encrypted_content"],
       service_tier: SERVICE_TIER,
-      prompt_cache_key: "claudecompact-full-" + stats.sha256.slice(0, 32),
+      prompt_cache_key: "patchpress-full-" + stats.sha256.slice(0, 32),
       text: {
         format: {
           type: "json_schema",
@@ -1915,7 +1915,7 @@ function buildCodexRequestBody(promptText, stats) {
         "x-codex-window-id": windowId,
         session_id: sessionId,
         thread_id: threadId,
-        codex_harness: "claudecompact-patcher",
+        codex_harness: "patchpress",
         request_kind: "full_transcript_compaction",
         transcript_sha256: stats.sha256,
         transcript_records: String(stats.records),
@@ -2006,7 +2006,7 @@ function buildChatCompletionsRequestBody(promptText, stats) {
         },
       },
       metadata: {
-        codex_harness: "claudecompact-patcher",
+        codex_harness: "patchpress",
         request_kind: "full_transcript_compaction",
         transcript_sha256: stats.sha256,
         transcript_records: String(stats.records),

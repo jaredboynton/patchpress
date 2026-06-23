@@ -1,7 +1,7 @@
 {
-  "name": "claudecompact-patcher",
+  "name": "patchpress",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "test": "bash scripts/gate-proofs/t3-tests.sh",

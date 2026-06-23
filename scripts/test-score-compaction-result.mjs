@@ -95,7 +95,7 @@ async function makeRun(root, name, capsuleCount) {
   return dir;
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-score-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-score-test-"));
 try {
   const fixturePath = join(tmp, "fixture.json");
   await writeJson(fixturePath, {

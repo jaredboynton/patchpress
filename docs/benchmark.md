@@ -1,6 +1,6 @@
 # Current Compaction Benchmark
 
-Canonical current benchmark for `claudecompact-patcher`. Every row below traces
+Canonical current benchmark for `patchpress`. Every row below traces
 to a run artifact under `runs/bench-*`. Scoring is two separate signals, the
 deterministic gate and the v3 semantic judge; see `docs/judging-and-scoring.md`.
 

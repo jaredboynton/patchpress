@@ -33,7 +33,7 @@ function runNode(args, options = {}) {
   });
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-future-work-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-future-work-test-"));
 try {
   const largeToolOutput =
     "TOOL_OUTPUT_BEGIN\n" +

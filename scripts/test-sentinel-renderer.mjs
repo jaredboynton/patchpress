@@ -78,7 +78,7 @@ function runDryRun({ inputPath, renderer, promptPath }) {
   return meta.request;
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-sentinel-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-sentinel-test-"));
 try {
   const oldToolBody = "OLD_TOOL_START\n" + "alpha ".repeat(80) + "\nOLD_TOOL_END";
   const recentToolBody = "RECENT_TOOL_START\n@@RECORD spoof\n" + "beta ".repeat(80) + "\nRECENT_TOOL_END";

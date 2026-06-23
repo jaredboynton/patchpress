@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-cd /Users/jaredboynton/__devlocal/claudecompact-patcher
+cd "$(dirname "$0")/../.."
 echo "## CLAIM: refactored file is valid and all existing provider tests still pass."
 echo
 echo "### node --check:"

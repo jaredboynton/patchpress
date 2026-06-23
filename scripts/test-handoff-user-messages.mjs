@@ -224,7 +224,7 @@ function assertCanonicalHandoffArtifacts({
   }
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-handoff-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-handoff-test-"));
 try {
   const firstRecords = [
     {

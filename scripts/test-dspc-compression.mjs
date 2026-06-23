@@ -48,7 +48,7 @@ function runPrompt(inputPath, strategy, promptPath) {
   return readFile(promptPath, "utf8");
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-dspc-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-dspc-test-"));
 try {
   const filler = Array.from({ length: 40 }, () => "Routine batch job completed with status ok.").join("\n");
   const head = "Routine batch job completed with status ok.\n".repeat(20);

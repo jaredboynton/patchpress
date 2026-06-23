@@ -58,7 +58,7 @@ function assert(condition, label) {
   if (!condition) throw new Error(label);
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-schema-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-schema-test-"));
 try {
   const records = [
     {

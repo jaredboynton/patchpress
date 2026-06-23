@@ -168,7 +168,7 @@ function buildRequestBody(promptText) {
         "x-codex-window-id": windowId,
         session_id: sessionId,
         thread_id: threadId,
-        codex_harness: "claudecompact-patcher",
+        codex_harness: "patchpress",
         request_kind: "smoke",
       },
     },

@@ -498,7 +498,7 @@ function buildCodexJudgeRequestBody(request) {
       stream: true,
       include: ["reasoning.encrypted_content"],
       service_tier: JUDGE_SERVICE_TIER,
-      prompt_cache_key: "claudecompact-judge-" + request.candidate_hashes.handoff_md_sha256.slice(0, 32),
+      prompt_cache_key: "patchpress-judge-" + request.candidate_hashes.handoff_md_sha256.slice(0, 32),
       text: {
         format: {
           type: "json_schema",
@@ -512,7 +512,7 @@ function buildCodexJudgeRequestBody(request) {
         "x-codex-window-id": windowId,
         session_id: sessionId,
         thread_id: threadId,
-        codex_harness: "claudecompact-patcher",
+        codex_harness: "patchpress",
         request_kind: "semantic_compaction_judge",
         run_dir: request.run_dir,
         handoff_md_sha256: request.candidate_hashes.handoff_md_sha256,

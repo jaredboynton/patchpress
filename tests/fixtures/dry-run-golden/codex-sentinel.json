@@ -23,7 +23,7 @@
     "transcript_records": 16,
     "transcript_renderer": "sentinel",
     "estimated_char_div_4_tokens": 32188,
-    "request_body_bytes": 138499,
+    "request_body_bytes": 138485,
     "wrapped_transcript_bytes": 121159,
     "wrapped_transcript_estimated_tokens": 30287,
     "live_output": true,
@@ -55,7 +55,7 @@
     "Authorization": "Bearer <redacted>",
     "ChatGPT-Account-Id": "<redacted>",
     "originator": "codex_cli_rs",
-    "User-Agent": "codex_cli_rs/0.142.0-alpha.10 (Mac OS 15.7.3; arm64) reqwest/0.12.28",
+    "User-Agent": "codex_cli_rs/0.142.0-alpha.11 (Mac OS 15.7.3; arm64) reqwest/0.12.28",
     "Accept": "text/event-stream",
     "Content-Type": "application/json",
     "session-id":"<v>",
@@ -91,7 +91,7 @@
       "reasoning.encrypted_content"
     ],
     "service_tier": "priority",
-    "prompt_cache_key": "claudecompact-full-44db274b84829f8e21e4492abb9dbbf5",
+    "prompt_cache_key": "patchpress-full-44db274b84829f8e21e4492abb9dbbf5",
     "text": {
       "format": {
         "type": "json_schema",
@@ -371,7 +371,7 @@
       "x-codex-window-id":"<v>",
       "session_id": "<uuid>",
       "thread_id": "<uuid>",
-      "codex_harness": "claudecompact-patcher",
+      "codex_harness": "patchpress",
       "request_kind": "full_transcript_compaction",
       "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
       "transcript_records": "16"

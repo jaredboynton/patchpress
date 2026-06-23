@@ -40,7 +40,7 @@ function assert(condition, label) {
   if (!condition) throw new Error(label);
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-onto-test-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-onto-test-"));
 try {
   const inputPath = join(tmp, "fixture.jsonl");
   await writeFile(

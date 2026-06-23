@@ -11,7 +11,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "claudecompact-renderer-stats-"));
+const tmp = await mkdtemp(join(tmpdir(), "patchpress-renderer-stats-"));
 try {
   const reportPath = join(tmp, "renderer-stats-report.md");
   const stdout = execFileSync(
