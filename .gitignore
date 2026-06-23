@@ -29,6 +29,7 @@ temp/
 # Local agent orchestration state
 .fablize/
 .unifable/
+scratchpad/
 
 # Full input transcripts are large local fixtures. Keep manifests/docs tracked.
 transcripts/*.jsonl
