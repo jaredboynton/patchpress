@@ -10,6 +10,10 @@ echo "### provider schema test:"
 node scripts/test-provider-schema.mjs
 echo "### handoff user-message + citable-filter tests:"
 node scripts/test-handoff-user-messages.mjs
+echo "### tool-output compression strategy tests (onto renderer, dspc, mask):"
+node scripts/test-onto-renderer.mjs
+node scripts/test-dspc-compression.mjs
+node scripts/test-mask-compression.mjs
 echo "### patcher anchor + dynamic helper-resolution test:"
 node scripts/test-patcher-anchors.mjs
 echo "### stable indirection shim test:"

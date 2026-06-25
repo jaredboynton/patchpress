@@ -340,13 +340,15 @@ const toolOutputCompressTailChars =
 // then a multi-signal score. The two model-derived signals in the paper
 // (last-layer attention, cross-model loss) are realized as deterministic lexical
 // proxies here because this renderer/compression path makes zero model calls;
-// the positional Gaussian (eq. 9) is computed exactly.
+// the positional Gaussian (eq. 9) is computed exactly. "mask" is full observation
+// masking (arXiv:2508.21433): drop the old tool-output body entirely, keeping only
+// a metadata placeholder (the body stays recoverable via the sha markers).
 const toolOutputCompressStrategy = argValue(
   "--tool-output-compress-strategy",
   process.env.COMPACT_TOOL_OUTPUT_STRATEGY || "headtail"
 );
-if (toolOutputCompressStrategy !== "headtail" && toolOutputCompressStrategy !== "dspc") {
-  throw new Error("Expected --tool-output-compress-strategy to be headtail or dspc");
+if (!["headtail", "dspc", "mask"].includes(toolOutputCompressStrategy)) {
+  throw new Error("Expected --tool-output-compress-strategy to be headtail, dspc, or mask");
 }
 function floatArg(name, fallback) {
   const raw = argValue(name);
@@ -687,7 +689,32 @@ function compactOldToolOutputBodyDSPC(body, entry) {
   };
 }
 
+// Observation masking (JetBrains "The Complexity Trap", arXiv:2508.21433): drop the
+// entire old tool-output body, keeping only a metadata placeholder. The exact body
+// stays recoverable downstream via body_sha256/record_sha256, same as headtail/dspc.
+function maskOldToolOutputBody(body, entry) {
+  const text = String(body || "");
+  if (text.length <= toolOutputCompressMinChars) return { body: text, compressed: false };
+  const lines = text.split("\n").length;
+  const marker =
+    "[tool output masked: strategy=mask original_chars=" +
+    text.length +
+    " original_lines=" +
+    lines +
+    " omitted_chars=" +
+    text.length +
+    " line=" +
+    entry.lineNumber +
+    " body_sha256=" +
+    sha256Text(text) +
+    " record_sha256=" +
+    entry.hash +
+    "]";
+  return { body: marker, compressed: true, originalChars: text.length, omittedChars: text.length };
+}
+
 function compactToolOutputBody(body, entry) {
+  if (toolOutputCompressStrategy === "mask") return maskOldToolOutputBody(body, entry);
   if (toolOutputCompressStrategy === "dspc") return compactOldToolOutputBodyDSPC(body, entry);
   return compactOldToolOutputBody(body, entry);
 }
