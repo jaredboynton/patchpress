@@ -102,14 +102,23 @@ export function padRedirect(redirectCode, bodyByteLength, label) {
 // during the run instead of freezing on a synchronous execSync. Child
 // stdout/stderr go to /tmp/claude-compact.log, never the TUI.
 
-// PRIMARY path (autocompact): the shared summarizer `Sel`. On failure it
-// RETHROWS (it does NOT return a mock summary). Source: the autocompact runner
-// (deobfuscated 4409.js:225-237) catches a throw and returns {wasCompacted:false},
-// preserving the un-compacted conversation. A returned mock instead yields
-// wasCompacted:true and REPLACES the whole conversation with the mock text
-// (catastrophic context loss).
-function buildSelRedirect(messagesVar) {
-  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const afterContent=fs.readFileSync(path.join(tempOutDir,"after-compact.jsonl"),"utf8");const lines=afterContent.split("\\n").filter(l=>l.trim());const summaryRecord=JSON.parse(lines[1]);const summaryText=summaryRecord.message.content[0].text;if(!summaryText)throw new Error("redirect: empty summary text from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0},model="compact";try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage;if(resultObj.model)model=resultObj.model}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:model,content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch Sel] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
+// PRIMARY path (autocompact): the shared summarizer `Sel`. The autocompact runner
+// calls `await p_l({messages,summaryRequest,...,preCompactTokenCount,...})` and
+// consumes the RETURN VALUE: `H=lW(w)` pulls the summary text; the retry loop
+// breaks on a real summary (`!H.startsWith("Prompt is too long")`) and
+// `if(!H)throw no_summary` rejects an empty one. So this redirect returns a valid
+// assistant message with non-empty text. On failure it RETHROWS (never a mock):
+// the runner catches -> {wasCompacted:false}, preserving the conversation (a mock
+// would yield wasCompacted:true and replace it).
+//
+// The summary is sourced from STABLE handoff.md (the same artifact _kd consumes,
+// always written by the harness) rather than a positional after-compact.jsonl
+// record, so a harness output-layout shift cannot silently break autocompact. A
+// `[patch Sel] invoked` marker (with preCompactTokenCount) is appended to
+// /tmp/claude-compact.log so autocompact firing is provable -- the trigger is
+// otherwise silent (errors rethrow and surface through the error marker).
+function buildSelRedirect(messagesVar, preCompactVar) {
+  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});try{fs.appendFileSync("/tmp/claude-compact.log","[patch Sel] invoked preCompactTokenCount="+(${preCompactVar}>>>0)+" mode=autocompact"+String.fromCharCode(10))}catch(ex){}const summaryText=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!summaryText||!summaryText.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500,cache_creation_input_tokens:0,cache_read_input_tokens:0},model="compact";try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage;if(resultObj.model)model=resultObj.model}catch(ex){}const result={type:"assistant",message:{role:"assistant",model:model,content:[{type:"text",text:summaryText}],usage:usage}};try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}return result}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch Sel] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}throw err}`;
 }
 
 // REACTIVE path (manual /compact): the reactive-compact summarizer `_kd`. Unlike
@@ -136,7 +145,7 @@ function buildSelRedirect(messagesVar) {
 // MUST NOT be hardcoded.
 function buildKdRedirect(messagesVar, ctxVar, helpers) {
   const { wrap, preamble, live, replchk, replnote } = helpers;
-  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=${live}(),u=${replchk}()&&${replnote}(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${wrap}({content:${preamble}(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
+  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});try{fs.appendFileSync("/tmp/claude-compact.log","[patch _kd] invoked"+String.fromCharCode(10))}catch(ex){}const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=${live}(),u=${replchk}()&&${replnote}(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${wrap}({content:${preamble}(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
 }
 
 // Resolve the 5 minified in-scope helper names from `_kd`'s native success-return
@@ -183,7 +192,7 @@ export function locateSel(content) {
     name: match[1],
     openBraceIndex,
     bodyByteLength: closeBraceIndex - openBraceIndex - 1,
-    redirectCode: buildSelRedirect(match[2]),
+    redirectCode: buildSelRedirect(match[2], match[6]),
   };
 }
 

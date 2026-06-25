@@ -37,6 +37,15 @@ for (const backup of backups) {
   assert(sel && sel.openBraceIndex > 0, `${backup}: Sel anchor resolved`);
   const selPad = padRedirect(sel.redirectCode, sel.bodyByteLength, sel.label);
   assert(selPad.paddedBuf.length === sel.bodyByteLength, `${backup}: Sel redirect fits byte budget`);
+  // Sel (autocompact) hardening -- mirrors the _kd dynamic-helper checks below.
+  // The redirect must source its summary from the stable handoff.md artifact (not
+  // a positional after-compact.jsonl read, which silently no-ops autocompact if
+  // the harness output layout shifts) and emit a positive [patch Sel] invocation
+  // marker so firing is provable from the log (the trigger is otherwise silent).
+  assert(sel.redirectCode.includes('"handoff.md"'), `${backup}: Sel redirect reads handoff.md`);
+  assert(!sel.redirectCode.includes("after-compact.jsonl"), `${backup}: Sel redirect has no positional after-compact.jsonl read`);
+  assert(sel.redirectCode.includes("[patch Sel] invoked"), `${backup}: Sel redirect emits invocation marker`);
+  assert(sel.redirectCode.includes('type:"assistant"') && sel.redirectCode.includes('content:[{type:"text"'), `${backup}: Sel redirect keeps native assistant-message return contract`);
 
   const kd = locateKd(content);
   assert(kd && kd.helpers, `${backup}: _kd anchor + helpers resolved`);
