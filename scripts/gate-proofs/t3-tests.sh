@@ -14,6 +14,8 @@ echo "### tool-output compression strategy tests (onto renderer, dspc, mask):"
 node scripts/test-onto-renderer.mjs
 node scripts/test-dspc-compression.mjs
 node scripts/test-mask-compression.mjs
+echo "### tool-use diff formatting tests:"
+node scripts/test-tool-use-format.mjs
 echo "### patcher anchor + dynamic helper-resolution test:"
 node scripts/test-patcher-anchors.mjs
 echo "### stable indirection shim test:"

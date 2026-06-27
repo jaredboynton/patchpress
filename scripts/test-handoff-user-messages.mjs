@@ -306,6 +306,18 @@ try {
     firstRehydratedSpans.some((span) => span.extracted_text.includes("tool-evidence-alpha")),
     "first handoff structured tool evidence missing"
   );
+  assert(
+    firstRehydratedSpans.some((span) => span.extracted_text.includes("@@tool Edit")),
+    "first handoff edit evidence should be diff-formatted"
+  );
+  assert(
+    !firstRehydratedSpans.some((span) => span.extracted_text.includes('"old_string"')),
+    "first handoff should not contain JSON old_string blobs"
+  );
+  assert(
+    firstRehydratedSpans.some((span) => (span.edit_capsules || []).length > 0),
+    "first handoff edit capsules missing"
+  );
   assertCanonicalHandoffArtifacts({
     state: firstState,
     stateText: firstStateText,

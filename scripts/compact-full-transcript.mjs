@@ -14,6 +14,14 @@ import {
 } from "./handoff-density.mjs";
 import { buildPromptAdaptations, modelTraits } from "./prompt-adaptation.mjs";
 import { rendererTranscriptGuide } from "./renderer-prompt-guides.mjs";
+import {
+  compactFormattedEdit,
+  extractEditCapsules,
+  formatToolResult,
+  formatToolResultContent,
+  formatToolUse,
+  isFormattedEditText,
+} from "./tool-use-format.mjs";
 
 // Load .env relative to the script directory
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -350,6 +358,17 @@ const toolOutputCompressStrategy = argValue(
 if (!["headtail", "dspc", "mask"].includes(toolOutputCompressStrategy)) {
   throw new Error("Expected --tool-output-compress-strategy to be headtail, dspc, or mask");
 }
+const toolUseCompressAfter =
+  argValue("--tool-use-compress-after") === undefined
+    ? toolOutputCompressAfter
+    : intArg("--tool-use-compress-after", toolOutputCompressAfter);
+const toolUseCompressMinChars = intArg("--tool-use-compress-min-chars", 800);
+const toolUseCompressHeadChars = intArg("--tool-use-compress-head-chars", 400);
+const toolUseCompressTailChars = intArg("--tool-use-compress-tail-chars", 200);
+const transcriptCwdPrefix = argValue(
+  "--transcript-cwd-prefix",
+  process.env.COMPACT_TRANSCRIPT_CWD_PREFIX || ""
+);
 function floatArg(name, fallback) {
   const raw = argValue(name);
   if (raw === undefined) return fallback;
@@ -451,43 +470,29 @@ function previewRecord(line) {
   }
 }
 
-function renderPartForPrompt(part) {
+function toolFormatMeta(entry) {
+  return {
+    lineNumber: entry?.lineNumber ?? null,
+    recordHash: entry?.hash ?? null,
+    cwdPrefix: transcriptCwdPrefix || null,
+  };
+}
+
+function renderPartForPrompt(part, meta = {}) {
   if (!part || typeof part !== "object") return "";
+  if (part.type === "tool_use") return formatToolUse(part, meta);
+  if (part.type === "tool_result") return formatToolResult(part, meta);
   if (typeof part.text === "string") return part.text;
   if (typeof part.content === "string") return part.content;
-  if (part.type === "tool_use") {
-    const name = part.name || "unknown";
-    const input =
-      part.input && typeof part.input === "object" ? JSON.stringify(part.input) : String(part.input || "");
-    return "[tool_use name=" + name + "]\n" + input;
-  }
-  if (part.type === "tool_result") {
-    const content = Array.isArray(part.content)
-      ? part.content
-          .map((item) =>
-            typeof item === "string"
-              ? item
-              : typeof item?.text === "string"
-                ? item.text
-                : typeof item?.content === "string"
-                  ? item.content
-                  : ""
-          )
-          .filter(Boolean)
-          .join("\n")
-      : typeof part.content === "string"
-        ? part.content
-        : "";
-    return "[tool_result]\n" + content;
-  }
   return "";
 }
 
-function recordTextForPrompt(record) {
+function recordTextForPrompt(record, entry = null) {
+  const meta = toolFormatMeta(entry);
   const content = record?.message?.content ?? record?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    const rendered = content.map(renderPartForPrompt).filter(Boolean).join("\n\n");
+    const rendered = content.map((part) => renderPartForPrompt(part, meta)).filter(Boolean).join("\n\n");
     if (rendered.length > 0) return rendered;
   }
   if (typeof record?.lastPrompt === "string" && record.lastPrompt.length > 0) return record.lastPrompt;
@@ -501,6 +506,20 @@ function isToolOutputRecord(record) {
   if (record?.toolUseResult || record?.sourceToolAssistantUUID) return true;
   if (!Array.isArray(content)) return false;
   return content.some((part) => part?.type === "tool_result" || part?.tool_use_id);
+}
+
+function isToolUseRecord(record) {
+  const content = record?.message?.content;
+  return Array.isArray(content) && content.some((part) => part?.type === "tool_use");
+}
+
+function compactOldToolUseBody(body, entry) {
+  if (!isFormattedEditText(body)) return { body, compressed: false };
+  return compactFormattedEdit(body, entry, {
+    minChars: toolUseCompressMinChars,
+    headChars: toolUseCompressHeadChars,
+    tailChars: toolUseCompressTailChars,
+  });
 }
 
 function escapeSentinelBody(text) {
@@ -746,7 +765,7 @@ function renderOntoRecord(entry, context) {
   const type = ontoMetaField(record.type || "unknown");
   const role = record.message?.role ? ontoMetaField(record.message.role) : "";
   const ts = record.timestamp ? ontoMetaField(record.timestamp) : "";
-  let body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+  let body = recordTextForPrompt(record, entry).trim() || entry.preview || "[no textual content extracted]";
   const oldToolOutput =
     isToolOutputRecord(record) &&
     toolOutputCompressAfter > 0 &&
@@ -757,6 +776,19 @@ function renderOntoRecord(entry, context) {
       context.stats.compressedToolOutputRecords += 1;
       context.stats.originalToolOutputChars += compacted.originalChars;
       context.stats.omittedToolOutputChars += compacted.omittedChars;
+    }
+    body = compacted.body;
+  }
+  const oldToolUse =
+    isToolUseRecord(record) &&
+    toolUseCompressAfter > 0 &&
+    entry.lineNumber <= context.recordCount - toolUseCompressAfter;
+  if (oldToolUse) {
+    const compacted = compactOldToolUseBody(body, entry);
+    if (compacted.compressed) {
+      context.stats.compressedToolUseRecords = (context.stats.compressedToolUseRecords || 0) + 1;
+      context.stats.originalToolUseChars = (context.stats.originalToolUseChars || 0) + compacted.originalChars;
+      context.stats.omittedToolUseChars = (context.stats.omittedToolUseChars || 0) + compacted.omittedChars;
     }
     body = compacted.body;
   }
@@ -788,7 +820,7 @@ function renderStrippedRecord(entry) {
   ];
   if (record.message?.role) attrs.push('role="' + String(record.message.role).replace(/"/g, "'") + '"');
   if (record.timestamp) attrs.push('timestamp="' + String(record.timestamp).replace(/"/g, "'") + '"');
-  const text = recordTextForPrompt(record).trim();
+  const text = recordTextForPrompt(record, entry).trim();
   const body = text || entry.preview || "[no textual content extracted]";
   return "<record " + attrs.join(" ") + ">\n" + body + "\n</record>";
 }
@@ -807,7 +839,7 @@ function renderSentinelRecord(entry, context) {
   ];
   if (record.message?.role) fields.push("role=" + String(record.message.role).replace(/\s+/g, "_"));
   if (record.timestamp) fields.push("ts=" + String(record.timestamp).replace(/\s+/g, "_"));
-  let body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+  let body = recordTextForPrompt(record, entry).trim() || entry.preview || "[no textual content extracted]";
   const oldToolOutput =
     isToolOutputRecord(record) && toolOutputCompressAfter > 0 && entry.lineNumber <= context.recordCount - toolOutputCompressAfter;
   if (oldToolOutput) {
@@ -816,6 +848,19 @@ function renderSentinelRecord(entry, context) {
       context.stats.compressedToolOutputRecords += 1;
       context.stats.originalToolOutputChars += compacted.originalChars;
       context.stats.omittedToolOutputChars += compacted.omittedChars;
+    }
+    body = compacted.body;
+  }
+  const oldToolUse =
+    isToolUseRecord(record) &&
+    toolUseCompressAfter > 0 &&
+    entry.lineNumber <= context.recordCount - toolUseCompressAfter;
+  if (oldToolUse) {
+    const compacted = compactOldToolUseBody(body, entry);
+    if (compacted.compressed) {
+      context.stats.compressedToolUseRecords = (context.stats.compressedToolUseRecords || 0) + 1;
+      context.stats.originalToolUseChars = (context.stats.originalToolUseChars || 0) + compacted.originalChars;
+      context.stats.omittedToolUseChars = (context.stats.omittedToolUseChars || 0) + compacted.omittedChars;
     }
     body = compacted.body;
   }
@@ -832,6 +877,9 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
     originalToolOutputChars: 0,
     renderedToolOutputChars: 0,
     omittedToolOutputChars: 0,
+    compressedToolUseRecords: 0,
+    originalToolUseChars: 0,
+    omittedToolUseChars: 0,
   };
   const entries = lines.map((line, idx) => {
     let searchableText = line;
@@ -1015,6 +1063,9 @@ function rendererStatsForTranscript(transcript, renderer) {
     originalToolOutputChars: 0,
     renderedToolOutputChars: 0,
     omittedToolOutputChars: 0,
+    compressedToolUseRecords: 0,
+    originalToolUseChars: 0,
+    omittedToolUseChars: 0,
   };
   for (const entry of entries) {
     let record = null;
@@ -2816,45 +2867,42 @@ function stableJson(value) {
   }
 }
 
-function extractContentPartText(part) {
+function extractContentPartText(part, meta = {}) {
   if (!part || typeof part !== "object") return "";
+  if (part.type === "tool_use") return formatToolUse(part, meta);
+  if (part.type === "tool_result") {
+    const formatted = formatToolResultContent(part.content, { ...meta, toolName: "EditResult" });
+    return formatted ? "[tool_result]\n" + formatted : "";
+  }
   if (typeof part.text === "string") return part.text;
   if (typeof part.content === "string") return part.content;
   if (Array.isArray(part.content)) {
     const nested = part.content
-      .map((nestedPart) => extractContentPartText(nestedPart))
+      .map((nestedPart) => extractContentPartText(nestedPart, meta))
       .filter((text) => text.length > 0);
     if (nested.length > 0) return nested.join("\n\n");
   }
-  if (part.type === "tool_use") {
-    return stableJson({
-      type: part.type,
-      name: part.name || null,
-      input: part.input || null,
-    });
-  }
-  if (part.type === "tool_result") {
-    return stableJson({
-      type: part.type,
-      tool_use_id: part.tool_use_id || null,
-      content: part.content || null,
-    });
-  }
-  if (part.input && typeof part.input === "object") return stableJson(part.input);
+  if (part.input && typeof part.input === "object") return formatToolUse({ type: "tool_use", name: "unknown", input: part.input }, meta);
   return "";
 }
 
-function extractRecordText(record) {
+function extractRecordText(record, meta = {}) {
   if (!record || typeof record !== "object") return "";
   if (typeof record.content === "string") return record.content;
   if (typeof record.message?.content === "string") return record.message.content;
   if (Array.isArray(record.message?.content)) {
     const texts = record.message.content
-      .map((part) => extractContentPartText(part))
+      .map((part) => extractContentPartText(part, meta))
       .filter((text) => text.length > 0);
-    if (texts.length > 0) return texts.join("\n");
+    if (texts.length > 0) return texts.join("\n\n");
   }
-  if (record.toolUseResult) return stableJson(record.toolUseResult);
+  if (record.toolUseResult) {
+    const formatted = formatToolResultContent(
+      typeof record.toolUseResult === "string" ? record.toolUseResult : JSON.stringify(record.toolUseResult),
+      { ...meta, toolName: "EditResult" }
+    );
+    return formatted || stableJson(record.toolUseResult);
+  }
   if (record.attachment) return JSON.stringify(record.attachment, null, 2);
   if (typeof record.lastPrompt === "string" && record.lastPrompt.length > 0) return record.lastPrompt;
   if (typeof record.aiTitle === "string" && record.aiTitle.length > 0) return record.aiTitle;
@@ -2889,7 +2937,11 @@ function buildExtractedSpanText(slice, startLine) {
   let extractedText = "";
   const textSegments = [];
   for (const [idx, record] of slice.entries()) {
-    const text = extractRecordText(record);
+    const lineNumber = startLine + idx;
+    const text = extractRecordText(record, {
+      lineNumber,
+      cwdPrefix: transcriptCwdPrefix || null,
+    });
     if (text.length === 0) continue;
     if (textSegments.length > 0) extractedText += "\n\n";
     const start = extractedText.length;
@@ -2959,6 +3011,7 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
         );
       }
       const codeCapsules = extractCodeCapsules(currentSpanId, extractedText, textSegments);
+      const editCapsules = extractEditCapsules(currentSpanId, extractedText);
       spans.push({
         span_id: currentSpanId,
         block_index: block.summary_block_index ?? anchoredIndex,
@@ -2972,6 +3025,7 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
         char_range: [0, extractedText.length],
         text_segments: textSegments,
         code_capsules: codeCapsules,
+        edit_capsules: editCapsules,
         start_line: span.start_line,
         end_line: span.end_line,
         start_hash: lineHash(lineHashArtifacts, span.start_line),
@@ -2991,6 +3045,7 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
 function renderRehydratedSummary(summary, spans) {
   const lines = [summary.summary_markdown.trim(), "", "## Rehydration Spans"];
   for (const span of spans) {
+    const editCount = (span.edit_capsules || []).length;
     lines.push(
       "- " +
         span.span_id +
@@ -3005,9 +3060,12 @@ function renderRehydratedSummary(summary, spans) {
         "-" +
         span.char_range[1] +
         " | code capsules " +
-        (span.code_capsules || []).length
+        (span.code_capsules || []).length +
+        (editCount ? " | edit capsules " + editCount : "")
     );
-    lines.push("```");
+    const fenceLang =
+      isFormattedEditText(span.extracted_text) || /@@tool EditResult/.test(span.extracted_text) ? "diff" : "";
+    lines.push("```" + fenceLang);
     lines.push(span.extracted_text.replace(/\n$/, ""));
     lines.push("```");
     for (const code of span.code_capsules || []) {
@@ -3022,6 +3080,20 @@ function renderRehydratedSummary(summary, spans) {
           code.char_range[1] +
           " | exact_sha256 " +
           code.exact_text_sha256
+      );
+    }
+    for (const edit of span.edit_capsules || []) {
+      lines.push(
+        "- edit " +
+          edit.id +
+          " | " +
+          edit.file_path +
+          " | +" +
+          edit.lines_added +
+          " -" +
+          edit.lines_removed +
+          " | diff_sha256 " +
+          edit.diff_sha256
       );
     }
     lines.push("");
@@ -3538,6 +3610,7 @@ function extractEvidenceLiteralIndex(rehydratedSpans, limit = 128) {
     },
     { cap: 28, values: collectEvidenceLiterals(rehydratedSpans, /\b[A-Z][A-Z0-9_]{2,}\b/g) },
     { cap: 16, values: collectEvidenceLiterals(rehydratedSpans, /\b[a-z]+\/[a-z0-9.+-]+\b/g) },
+    { cap: 48, values: collectEvidenceLiterals(rehydratedSpans, /^@@file ([^\n]+)$/gm) },
     {
       cap: 48,
       values: collectEvidenceLiterals(
@@ -4280,6 +4353,12 @@ async function main() {
       compressesToolOutput ? lineHashArtifacts.renderStats.renderedToolOutputChars : null,
     tool_output_omitted_chars:
       compressesToolOutput ? lineHashArtifacts.renderStats.omittedToolOutputChars : null,
+    tool_use_compress_after: toolUseCompressAfter,
+    tool_use_compress_min_chars: toolUseCompressMinChars,
+    tool_use_compressed_records: lineHashArtifacts.renderStats.compressedToolUseRecords || null,
+    tool_use_original_chars: lineHashArtifacts.renderStats.originalToolUseChars || null,
+    tool_use_omitted_chars: lineHashArtifacts.renderStats.omittedToolUseChars || null,
+    transcript_cwd_prefix: transcriptCwdPrefix || null,
     custom_summary_instructions: customSummaryInstructions.trim() || null,
     compact_and_prompt: compactAndPrompt.trim() || null,
     from_output: fromOutputPath ? resolve(fromOutputPath) : null,
