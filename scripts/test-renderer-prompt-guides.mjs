@@ -20,7 +20,7 @@ console.log("2. Per-renderer read/output guides:");
 for (const [renderer, mustInclude] of [
   ["sentinel", ["How to read (sentinel", "@@RECORD line=000042", "How to output (sentinel", '"start_line": 42']],
   ["stripped", ["How to read (stripped", '<record line="000042"', "How to output (stripped"]],
-  ["onto", ["How to read (onto", "@@ONTO Transcript", "000042|user|user", "How to output (onto", "Model registry"]],
+  ["onto", ["How to read (onto", "@@ONTO Transcript", "42|user", "How to output (onto", "Model registry"]],
 ]) {
   const text = rendererTranscriptGuide(renderer).join("\n");
   for (const needle of mustInclude) {

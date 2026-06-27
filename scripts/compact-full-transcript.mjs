@@ -321,7 +321,7 @@ const handoffUserMessageTokenBudget = intArg("--handoff-user-message-token-budge
 const handoffUserMessageLineLimit = intArg("--handoff-user-message-line-limit", 300);
 const transcriptRenderer = argValue(
   "--transcript-renderer",
-  process.env.COMPACT_TRANSCRIPT_RENDERER || "stripped"
+  process.env.COMPACT_TRANSCRIPT_RENDERER || "onto"
 );
 if (transcriptRenderer !== "stripped" && transcriptRenderer !== "sentinel" && transcriptRenderer !== "jsonl" && transcriptRenderer !== "onto") {
   throw new Error("Expected --transcript-renderer to be stripped, sentinel, jsonl, or onto");
@@ -738,33 +738,220 @@ function compactToolOutputBody(body, entry) {
   return compactOldToolOutputBody(body, entry);
 }
 
+function createRenderStats() {
+  return {
+    compressedToolOutputRecords: 0,
+    originalToolOutputChars: 0,
+    renderedToolOutputChars: 0,
+    omittedToolOutputChars: 0,
+    compressedToolUseRecords: 0,
+    originalToolUseChars: 0,
+    omittedToolUseChars: 0,
+    renderBodyCleanupRemovedChars: 0,
+    renderBodyCleanupRemovedLines: 0,
+    renderBodyCleanupDedentedBlocks: 0,
+  };
+}
+
+const RENDER_WS_RE = /^[\s\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000]*$/u;
+const RENDER_WS_EDGE_RE = /^[\s\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000]+|[\s\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000]+$/gu;
+const BOX_DRAWING_CHARS = new Set(
+  "┌┐└┘├┤┬┴┼─│┏┓┗┛┣┫┳┻╋━┃╭╮╰╯╔╗╚╝╠╣╦╩╬═║╞╡╤╧╪╟╢╥╨╫╒╕╘╛╓╖╙╜┄┅┈┉┆┇┊┋╎╏".split("")
+);
+
+function isRenderWhitespaceOnly(line) {
+  return RENDER_WS_RE.test(String(line || ""));
+}
+
+function trimRenderWhitespace(line) {
+  return String(line || "").replace(RENDER_WS_EDGE_RE, "");
+}
+
+function isVisualSeparatorLine(line) {
+  const trimmed = trimRenderWhitespace(line);
+  if (trimmed.length < 20) return false;
+  let hasBoxDrawing = false;
+  for (const char of trimmed) {
+    if (BOX_DRAWING_CHARS.has(char)) {
+      hasBoxDrawing = true;
+      continue;
+    }
+    if (isRenderWhitespaceOnly(char)) continue;
+    hasBoxDrawing = false;
+    break;
+  }
+  if (hasBoxDrawing) return true;
+  return /^[=\-_*]+$/.test(trimmed);
+}
+
+function stripVisualSeparatorLines(lines) {
+  let removedLines = 0;
+  const kept = [];
+  for (const line of lines) {
+    if (isVisualSeparatorLine(line)) {
+      removedLines += 1;
+      continue;
+    }
+    kept.push(line);
+  }
+  return { lines: kept, removedLines };
+}
+
+function collapseBlankRuns(lines) {
+  const out = [];
+  let blankRun = 0;
+  let removedLines = 0;
+  for (const line of lines) {
+    if (isRenderWhitespaceOnly(line)) {
+      blankRun += 1;
+      if (blankRun <= 2) out.push("");
+      else removedLines += 1;
+      continue;
+    }
+    blankRun = 0;
+    out.push(line);
+  }
+  return { lines: out, removedLines };
+}
+
+function leadingSpaceCount(line) {
+  const match = String(line).match(/^ */);
+  return match ? match[0].length : 0;
+}
+
+function leadingIndentHasTab(line) {
+  return /^[ \t]*\t/.test(String(line));
+}
+
+function isMarkdownStructuralBlock(block) {
+  const nonblank = block.map((line) => line.trim()).filter(Boolean);
+  if (nonblank.length === 0) return false;
+  if (nonblank.every((line) => /^\|.*\|$/.test(line))) return true;
+  return nonblank.every((line) => /^(?:[-*+]|\d+[.)]|>|#{1,6}\s)/.test(line));
+}
+
+function isRenderedCodeBoundary(line) {
+  const trimmed = String(line || "").trim();
+  return (
+    trimmed === "" ||
+    trimmed.startsWith("```") ||
+    /^\d+\|/.test(trimmed) ||
+    /^@@(?:RECORD|END_RECORD)\b/.test(trimmed) ||
+    /^<\/?record\b/.test(trimmed)
+  );
+}
+
+function isOverIndentedCodeStart(line) {
+  if (leadingIndentHasTab(line) || leadingSpaceCount(line) < 12) return false;
+  const trimmed = String(line || "").trim();
+  return (
+    /^(?:match|if|else|for|while|switch|case|return|let|fn)\b/.test(trimmed) ||
+    /^(?:Ok|Err|None|Some)\b/.test(trimmed) ||
+    /^sub_[A-Za-z0-9_]+/.test(trimmed) ||
+    /[{};]|=>|::|->/.test(trimmed)
+  );
+}
+
+function dedentRenderedCodeBlocks(lines) {
+  const out = lines.slice();
+  let dedentedBlocks = 0;
+  for (let idx = 0; idx < out.length;) {
+    while (idx < out.length && isRenderWhitespaceOnly(out[idx])) idx += 1;
+    const start = idx;
+    while (idx < out.length && !isRenderWhitespaceOnly(out[idx])) idx += 1;
+    const end = idx;
+    const block = out.slice(start, end);
+    if (block.length < 3) continue;
+    if (block.some(leadingIndentHasTab)) continue;
+    const minIndent = Math.min(...block.map(leadingSpaceCount));
+    if (!Number.isFinite(minIndent) || minIndent < 8) continue;
+    if (isMarkdownStructuralBlock(block)) continue;
+    for (let lineIdx = start; lineIdx < end; lineIdx += 1) {
+      out[lineIdx] = out[lineIdx].slice(minIndent);
+    }
+    dedentedBlocks += 1;
+  }
+  for (let idx = 0; idx < out.length;) {
+    if (!isOverIndentedCodeStart(out[idx])) {
+      idx += 1;
+      continue;
+    }
+    const start = idx;
+    const baseIndent = leadingSpaceCount(out[start]);
+    idx += 1;
+    while (idx < out.length && !isRenderedCodeBoundary(out[idx])) idx += 1;
+    const end = idx;
+    const block = out.slice(start, end);
+    if (block.length < 3) continue;
+    if (block.some(leadingIndentHasTab)) continue;
+    if (isMarkdownStructuralBlock(block)) continue;
+    let changed = false;
+    for (let lineIdx = start; lineIdx < end; lineIdx += 1) {
+      if (isRenderWhitespaceOnly(out[lineIdx])) continue;
+      const trimBy = Math.min(baseIndent, leadingSpaceCount(out[lineIdx]));
+      if (trimBy > 0) {
+        out[lineIdx] = out[lineIdx].slice(trimBy);
+        changed = true;
+      }
+    }
+    if (changed) dedentedBlocks += 1;
+  }
+  return { lines: out, dedentedBlocks };
+}
+
+function normalizeRenderedPromptBody(body, _entry, stats) {
+  const before = String(body || "");
+  if (before.length === 0) return before;
+  let lines = before.split("\n");
+  let removedLines = 0;
+  let dedentedBlocks = 0;
+
+  const stripped = stripVisualSeparatorLines(lines);
+  lines = stripped.lines;
+  removedLines += stripped.removedLines;
+
+  const collapsed = collapseBlankRuns(lines);
+  lines = collapsed.lines;
+  removedLines += collapsed.removedLines;
+
+  const dedented = dedentRenderedCodeBlocks(lines);
+  lines = dedented.lines;
+  dedentedBlocks += dedented.dedentedBlocks;
+
+  const after = lines.join("\n");
+  if (stats && after.length < before.length) {
+    stats.renderBodyCleanupRemovedChars =
+      (stats.renderBodyCleanupRemovedChars || 0) + (before.length - after.length);
+    stats.renderBodyCleanupRemovedLines = (stats.renderBodyCleanupRemovedLines || 0) + removedLines;
+    stats.renderBodyCleanupDedentedBlocks =
+      (stats.renderBodyCleanupDedentedBlocks || 0) + dedentedBlocks;
+  }
+  return after;
+}
+
 function escapeOntoBody(text) {
-  return String(text || "").replace(/^(\d{6}\|)/gm, " $1");
+  return String(text || "").replace(/^(\d+\|)/gm, " $1");
 }
 
 function ontoMetaField(value) {
   return String(value == null ? "" : value).replace(/\s+/g, "_").replace(/\|/g, "/");
 }
 
-// ONTO-inspired schema-once row-major renderer (arXiv:2604.17512). Per-record
-// metadata keys (line|type|role|ts|chars) are declared once in the @@ONTO header;
-// each record is one pipe-delimited value row (empty fields render as ONTO null)
-// followed by its free-text body. Row-major (not the paper's column-major field
-// lines) preserves the per-record line anchor the scorer/rehydrator depend on.
-// Drops per-record key= repetition used by sentinel and stripped. A record starts
-// at ^\d{6}\|; body lines that would collide are space-escaped.
+// ONTO-inspired schema-once row-major renderer (arXiv:2604.17512). Compact ONTO
+// declares line|type once, then emits one pipe-delimited row per record followed
+// by its free-text body. The row line is the citable anchor; raw JSONL/sidecars
+// retain full timestamps, roles, hashes, and exact record text for rehydration.
+// A record starts at ^\d+\|; body lines that would collide are space-escaped.
 function renderOntoRecord(entry, context) {
-  const linePadded = String(entry.lineNumber).padStart(6, "0");
+  const lineNumber = String(entry.lineNumber);
   let record;
   try {
     record = JSON.parse(entry.raw);
   } catch {
     const body = escapeOntoBody(entry.raw);
-    return linePadded + "|unparsed|||" + body.length + "\n" + body;
+    return lineNumber + "|unparsed\n" + body;
   }
   const type = ontoMetaField(record.type || "unknown");
-  const role = record.message?.role ? ontoMetaField(record.message.role) : "";
-  const ts = record.timestamp ? ontoMetaField(record.timestamp) : "";
   let body = recordTextForPrompt(record, entry).trim() || entry.preview || "[no textual content extracted]";
   const oldToolOutput =
     isToolOutputRecord(record) &&
@@ -792,16 +979,17 @@ function renderOntoRecord(entry, context) {
     }
     body = compacted.body;
   }
+  body = normalizeRenderedPromptBody(body, entry, context.stats);
   body = escapeOntoBody(body);
   if (oldToolOutput) context.stats.renderedToolOutputChars += body.length;
-  return [linePadded, type, role, ts, String(body.length)].join("|") + "\n" + body;
+  return [lineNumber, type].join("|") + "\n" + body;
 }
 
 function ontoHeader(recordCount) {
-  return "@@ONTO Transcript[" + recordCount + "] fields=line|type|role|ts|chars";
+  return "@@ONTO Transcript[" + recordCount + "] fields=line|type";
 }
 
-function renderStrippedRecord(entry) {
+function renderStrippedRecord(entry, context = {}) {
   let record;
   try {
     record = JSON.parse(entry.raw);
@@ -821,7 +1009,11 @@ function renderStrippedRecord(entry) {
   if (record.message?.role) attrs.push('role="' + String(record.message.role).replace(/"/g, "'") + '"');
   if (record.timestamp) attrs.push('timestamp="' + String(record.timestamp).replace(/"/g, "'") + '"');
   const text = recordTextForPrompt(record, entry).trim();
-  const body = text || entry.preview || "[no textual content extracted]";
+  const body = normalizeRenderedPromptBody(
+    text || entry.preview || "[no textual content extracted]",
+    entry,
+    context.stats
+  );
   return "<record " + attrs.join(" ") + ">\n" + body + "\n</record>";
 }
 
@@ -864,6 +1056,7 @@ function renderSentinelRecord(entry, context) {
     }
     body = compacted.body;
   }
+  body = normalizeRenderedPromptBody(body, entry, context.stats);
   body = escapeSentinelBody(body);
   if (oldToolOutput) context.stats.renderedToolOutputChars += body.length;
   fields.push("chars=" + body.length);
@@ -872,15 +1065,7 @@ function renderSentinelRecord(entry, context) {
 
 function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
   const lines = logicalJsonlLines(transcript);
-  const renderStats = {
-    compressedToolOutputRecords: 0,
-    originalToolOutputChars: 0,
-    renderedToolOutputChars: 0,
-    omittedToolOutputChars: 0,
-    compressedToolUseRecords: 0,
-    originalToolUseChars: 0,
-    omittedToolUseChars: 0,
-  };
+  const renderStats = createRenderStats();
   const entries = lines.map((line, idx) => {
     let searchableText = line;
     try {
@@ -908,7 +1093,7 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
     entries
       .map((entry) => {
         const line = String(entry.lineNumber).padStart(6, "0");
-        if (renderer === "stripped") return renderStrippedRecord(entry);
+        if (renderer === "stripped") return renderStrippedRecord(entry, { recordCount: entries.length, stats: renderStats });
         if (renderer === "sentinel") {
           return renderSentinelRecord(entry, { recordCount: entries.length, stats: renderStats });
         }
@@ -1040,7 +1225,7 @@ function recordKind(record) {
 
 function renderEntryForStats(entry, renderer, context) {
   const line = String(entry.lineNumber).padStart(6, "0");
-  if (renderer === "stripped") return renderStrippedRecord(entry);
+  if (renderer === "stripped") return renderStrippedRecord(entry, context);
   if (renderer === "sentinel") return renderSentinelRecord(entry, context);
   if (renderer === "onto") return renderOntoRecord(entry, context);
   return '<record line="' + line + '">' + entry.raw + "</record>";
@@ -1058,15 +1243,7 @@ function rendererStatsForTranscript(transcript, renderer) {
   const topOmitted = [];
   const lines = logicalJsonlLines(transcript);
   const entries = artifacts.entries;
-  const renderStats = {
-    compressedToolOutputRecords: 0,
-    originalToolOutputChars: 0,
-    renderedToolOutputChars: 0,
-    omittedToolOutputChars: 0,
-    compressedToolUseRecords: 0,
-    originalToolUseChars: 0,
-    omittedToolUseChars: 0,
-  };
+  const renderStats = createRenderStats();
   for (const entry of entries) {
     let record = null;
     let parsed = true;
@@ -4334,6 +4511,9 @@ async function main() {
     transcript_bytes: stats.bytes,
     transcript_records: stats.records,
     transcript_renderer: transcriptRenderer,
+    render_body_cleanup_removed_chars: lineHashArtifacts.renderStats.renderBodyCleanupRemovedChars || 0,
+    render_body_cleanup_removed_lines: lineHashArtifacts.renderStats.renderBodyCleanupRemovedLines || 0,
+    render_body_cleanup_dedented_blocks: lineHashArtifacts.renderStats.renderBodyCleanupDedentedBlocks || 0,
     estimated_char_div_4_tokens: stats.approxTokens,
     request_body_bytes: Buffer.byteLength(bodyText),
     wrapped_transcript_bytes: Buffer.byteLength(lineHashArtifacts.wrappedTranscript),

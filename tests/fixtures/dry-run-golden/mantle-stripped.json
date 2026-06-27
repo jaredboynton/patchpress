@@ -7,7 +7,7 @@
     "model": "xai.grok-4.3",
     "reask_until_pass": false,
     "max_reasks": 0,
-    "provider_schema_fingerprint": "7a17c043d8c23677950f0e4d09f19f4abea50d690f4b53071b5ccafb79514a10",
+    "provider_schema_fingerprint": "2989a70720c85bc5c17b4d04a7cfd3429953b7174b5ad2542215b581f3d7a79a",
     "local_validation_schema": "summary-local-validation.v1",
     "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
     "service_tier": null,
@@ -16,16 +16,19 @@
     "thinking_level": null,
     "thinking_config": null,
     "max_output_tokens": null,
-    "inputPath": "/tmp/e-reduced.jsonl",
+    "inputPath": "<repo>/tests/fixtures/reduced-transcript.jsonl",
     "outDir": "/tmp/fixed-dry",
-    "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
-    "transcript_bytes": 128761,
-    "transcript_records": 16,
+    "transcript_sha256": "a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86",
+    "transcript_bytes": 535,
+    "transcript_records": 3,
     "transcript_renderer": "stripped",
-    "estimated_char_div_4_tokens": 32188,
-    "request_body_bytes": 137593,
-    "wrapped_transcript_bytes": 120864,
-    "wrapped_transcript_estimated_tokens": 30213,
+    "render_body_cleanup_removed_chars": 0,
+    "render_body_cleanup_removed_lines": 0,
+    "render_body_cleanup_dedented_blocks": 0,
+    "estimated_char_div_4_tokens": 134,
+    "request_body_bytes": 17037,
+    "wrapped_transcript_bytes": 475,
+    "wrapped_transcript_estimated_tokens": 119,
     "live_output": true,
     "preserve_tail": 16,
     "tool_output_compress_strategy": null,
@@ -37,6 +40,12 @@
     "tool_output_original_chars": null,
     "tool_output_rendered_chars": null,
     "tool_output_omitted_chars": null,
+    "tool_use_compress_after": 64,
+    "tool_use_compress_min_chars": 800,
+    "tool_use_compressed_records": null,
+    "tool_use_original_chars": null,
+    "tool_use_omitted_chars": null,
+    "transcript_cwd_prefix": null,
     "custom_summary_instructions": null,
     "compact_and_prompt": null,
     "from_output": null,
@@ -65,7 +74,7 @@
       },
       {
         "role": "user",
-        "content": "<full transcript omitted from redacted request; see before transcript artifact> {\"inputPath\":\"/tmp/e-reduced.jsonl\",\"sha256\":\"44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc\",\"bytes\":128761,\"records\":16,\"approxTokens\":32188}"
+        "content": "<full transcript omitted from redacted request; see before transcript artifact> {\"inputPath\":\"<repo>/tests/fixtures/reduced-transcript.jsonl\",\"sha256\":\"a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86\",\"bytes\":535,\"records\":3,\"approxTokens\":134}"
       }
     ],
     "stream": true,
@@ -135,13 +144,13 @@
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         }
                       }
                     }
@@ -188,13 +197,13 @@
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         }
                       }
                     }
@@ -242,13 +251,13 @@
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         }
                       }
                     }
@@ -297,13 +306,13 @@
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
                           "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
                           "minimum": 1,
-                          "maximum": 16
+                          "maximum": 3
                         }
                       }
                     }
@@ -350,8 +359,8 @@
     "metadata": {
       "codex_harness": "patchpress",
       "request_kind": "full_transcript_compaction",
-      "transcript_sha256": "44db274b84829f8e21e4492abb9dbbf5cf7e459cc004420d386314c61bb341dc",
-      "transcript_records": "16"
+      "transcript_sha256": "a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86",
+      "transcript_records": "3"
     },
     "temperature": 0.4
   }

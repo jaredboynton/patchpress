@@ -106,16 +106,16 @@ const GUIDES = {
     read: [
       "How to read (onto renderer):",
       "Line 1 is the schema-once header. Each record is one pipe metadata row then body lines",
-      "until the next row matching ^NNNNNN| . The record number is the first pipe field (integer).",
+      "until the next row matching ^N+| . The record number is the first pipe field (integer).",
       "",
-      "  @@ONTO Transcript[799] fields=line|type|role|ts|chars",
-      "  000042|user|user|2026-06-20T12:00:00.000Z|52",
+      "  @@ONTO Transcript[799] fields=line|type",
+      "  42|user",
       "  Add transport capture notes here.",
-      "  000180|assistant|assistant|2026-06-20T12:05:00.000Z|2400",
+      "  180|assistant",
       "  [tool output compressed: strategy=headtail ... line=180 ...]",
       "  ...compressed body...",
       "",
-      "Cite start_line/end_line 42 and 180 (integers). Body lines starting with space+000NNN|",
+      "Cite start_line/end_line 42 and 180 (integers). Body lines starting with space+N|",
       "are escaped content, not new records.",
     ],
     output: [
@@ -174,9 +174,9 @@ export function rendererTranscriptGuide(renderer) {
         ]
       : key === "onto"
         ? [
-            "- The transcript uses ONTO-inspired schema-once row-major framing: the first line '@@ONTO Transcript[N] fields=line|type|role|ts|chars' declares the per-record metadata keys once.",
-            "- Each record then starts with one pipe-delimited value row 'line|type|role|ts|chars' (empty fields are null), immediately followed by that record's body until the next row.",
-            "- Use the first pipe field (the zero-padded one-based logical JSONL record number) from each row for every source span.",
+            "- The transcript uses ONTO-inspired schema-once row-major framing: the first line '@@ONTO Transcript[N] fields=line|type' declares the per-record metadata keys once.",
+            "- Each record then starts with one pipe-delimited value row 'line|type', immediately followed by that record's body until the next row.",
+            "- Use the first pipe field (the one-based logical JSONL record number) from each row for every source span.",
             "- Some older tool-output records may be body-compressed with an explicit sha256 marker; cite the record line when that compressed output matters, because the harness rehydrates exact content from the source JSONL.",
           ]
         : [

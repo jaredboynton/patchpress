@@ -18,7 +18,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const compactScript = join(repoRoot, "scripts", "compact-full-transcript.mjs");
 const fixtureDir = join(repoRoot, "tests", "fixtures", "dry-run-golden");
-const inputPath = process.env.DRY_PARITY_INPUT || "/tmp/e-reduced.jsonl";
+const defaultInputPath = join(repoRoot, "tests", "fixtures", "reduced-transcript.jsonl");
+const inputPath = process.env.DRY_PARITY_INPUT || defaultInputPath;
 const update = process.argv.includes("--update");
 
 const PROVIDERS = ["codex", "gemini", "xai", "mantle"];
@@ -27,10 +28,13 @@ const RENDERERS = ["sentinel", "stripped", "onto"];
 // Normalize volatile fields so only request logic is compared.
 function normalize(text) {
   return text
+    .split(repoRoot)
+    .join("<repo>")
     .replace(
       /"(sessionId|threadId|installationId|windowId|x-client-request-id|session-id|thread-id|x-codex-installation-id|x-codex-window-id)":\s*"[^"]*"/g,
       '"$1":"<v>"'
     )
+    .replace(/"User-Agent":\s*"[^"]*"/g, '"User-Agent":"<v>"')
     .replace(
       /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
       "<uuid>"
