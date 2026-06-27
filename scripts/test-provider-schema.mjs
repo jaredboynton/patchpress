@@ -89,26 +89,27 @@ try {
   const dryRun = providerDryRun("codex");
   const [, redactedRequest] = parseConcatenatedJson(dryRun);
   const schema = redactedRequest.body.text.format.schema;
-  const required = schema.required || [];
-  assert(required.includes("summary_blocks"), "provider schema dropped anchored summary_blocks");
-  assert(!required.includes("primary_request_and_intent"), "provider schema requires legacy intent array");
+	  const required = schema.required || [];
+	  assert(required.includes("summary_blocks"), "provider schema dropped anchored summary_blocks");
+	  assert(required.includes("pickup_state"), "provider schema dropped pickup_state");
+	  assert(!required.includes("primary_request_and_intent"), "provider schema requires legacy intent array");
   assert(!required.includes("key_technical_concepts"), "provider schema requires legacy concepts array");
   assert(!required.includes("source_lines_used"), "provider schema requires derived source_lines_used");
   assert(!schema.properties.primary_request_and_intent, "provider schema still exposes legacy intent array");
   assert(!schema.properties.source_lines_used, "provider schema still exposes derived source_lines_used");
   assert(
-    schema.properties.rules_and_invariants.description.includes("Durable live instructions and constraints") &&
-      schema.properties.rules_and_invariants.description.includes("Exclude ordinary completed tasks"),
+    schema.properties.rules_and_invariants.description.includes("Live instructions or constraints") &&
+      schema.properties.rules_and_invariants.description.includes("govern future work"),
     "rules_and_invariants description does not distinguish live constraints from task history"
   );
   assert(
-    schema.properties.plans_and_task_state.description.includes("Work-state ledger") &&
-      schema.properties.plans_and_task_state.description.includes("not a rule list"),
+    schema.properties.plans_and_task_state.description.includes("Task ledger") &&
+      schema.properties.plans_and_task_state.description.includes("active, pending, blocked"),
     "plans_and_task_state description does not distinguish task state from rules"
   );
   assert(
-    schema.properties.promises_made.description.includes("Explicit assistant commitments") &&
-      schema.properties.promises_made.description.includes("Do not infer promises from a user request alone"),
+    schema.properties.promises_made.description.includes("Unresolved assistant commitments") &&
+      schema.properties.promises_made.description.includes("completed commitments whose proof"),
     "promises_made description does not distinguish commitments from requests or plans"
   );
 
@@ -173,11 +174,13 @@ try {
   );
   const summary = JSON.parse(await readFile(join(outDir, "summary.json"), "utf8"));
   assert(Array.isArray(summary.primary_request_and_intent), "legacy intent array was not defaulted");
-  assert(Array.isArray(summary.key_technical_concepts), "legacy concepts array was not defaulted");
-  assert(Array.isArray(summary.source_lines_used), "source_lines_used was not derived");
-  assert(summary.source_lines_used.length === 1 && summary.source_lines_used[0] === 1, "bad derived source lines");
+	  assert(Array.isArray(summary.key_technical_concepts), "legacy concepts array was not defaulted");
+	  assert(Array.isArray(summary.source_lines_used), "source_lines_used was not derived");
+	  assert(summary.source_lines_used.length === 1 && summary.source_lines_used[0] === 1, "bad derived source lines");
+	  assert(summary.pickup_state?.current_task === "Need preserve alpha.", "pickup current_task was not defaulted");
+	  assert(summary.pickup_state?.next_action === "Continue.", "pickup next_action was not defaulted");
 
-  console.log("provider schema split test passed");
+	  console.log("provider schema split test passed");
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }

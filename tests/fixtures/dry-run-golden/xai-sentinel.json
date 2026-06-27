@@ -7,7 +7,7 @@
     "model": "grok-4.20-0309-non-reasoning",
     "reask_until_pass": false,
     "max_reasks": 0,
-    "provider_schema_fingerprint": "2989a70720c85bc5c17b4d04a7cfd3429953b7174b5ad2542215b581f3d7a79a",
+    "provider_schema_fingerprint": "f0113ce3dec4dc1eab95f59014001269c2ebdd9779d252b01d6c68dc006887d6",
     "local_validation_schema": "summary-local-validation.v1",
     "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
     "service_tier": null,
@@ -26,7 +26,7 @@
     "render_body_cleanup_removed_lines": 0,
     "render_body_cleanup_dedented_blocks": 0,
     "estimated_char_div_4_tokens": 134,
-    "request_body_bytes": 17404,
+    "request_body_bytes": 13864,
     "wrapped_transcript_bytes": 502,
     "wrapped_transcript_estimated_tokens": 126,
     "live_output": true,
@@ -96,6 +96,7 @@
             "plans_and_task_state",
             "current_work",
             "optional_next_step",
+            "pickup_state",
             "promises_made",
             "source_integrity"
           ],
@@ -103,7 +104,7 @@
             "summary_blocks": {
               "type": "array",
               "minItems": 1,
-              "description": "One thematic section per distinct domain of the session. Be exhaustive: emit a separate block for every domain touched (current state, current user intent and constraints, each active artifact area, transport/capture, endpoints/payloads, model registry, tooling/skills, decisions, and pending work). Many focused blocks beat a few broad ones; do not merge unrelated domains into a single block. This handoff outlives the transcript, so a domain you omit is lost.",
+              "description": "Focused continuation sections. Start with latest live state; include older context only when it affects continuation.",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -126,12 +127,12 @@
                   },
                   "body": {
                     "type": "string",
-                    "description": "Rendered summary content for this block. Bullet bodies must be a single item without a leading bullet marker."
+                    "description": "Concise rendered summary content for this block."
                   },
                   "source_spans": {
                     "type": "array",
                     "minItems": 1,
-                    "description": "Cite MULTIPLE narrow record ranges that support this block -- one fact per span. Prefer several 1-3 record citations over one wide span; every verbatim path, protocol string, RPC/service name, command, or version number named in the body needs its own span. A block with a single span almost always collapsed several facts.",
+                    "description": "Narrow record ranges supporting this block.",
                     "items": {
                       "type": "object",
                       "additionalProperties": false,
@@ -142,13 +143,13 @@
                       "properties": {
                         "start_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         }
@@ -160,7 +161,7 @@
             },
             "rules_and_invariants": {
               "type": "array",
-              "description": "Durable live instructions and constraints that should govern future work after compaction. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain what the next agent may do. Exclude ordinary completed tasks, transient exploration notes, historical user messages, rejected ideas, and old instructions that were later superseded or removed.",
+              "description": "Live instructions or constraints that still govern future work.",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -180,7 +181,7 @@
                       "superseded",
                       "removed"
                     ],
-                    "description": "Only current rules should be treated as live instructions after compaction. Use superseded or removed when later transcript state invalidates the rule."
+                    "description": "Current rules are live; superseded/removed rules are historical warnings."
                   },
                   "source_spans": {
                     "type": "array",
@@ -195,13 +196,13 @@
                       "properties": {
                         "start_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         }
@@ -213,7 +214,7 @@
             },
             "plans_and_task_state": {
               "type": "array",
-              "description": "Work-state ledger for the task, not a rule list. Include active or pending tasks, completed milestones that matter for continuation, benchmark state, open artifacts, open questions, blockers, and concrete next actions. Order active and pending work by priority. Exclude durable behavioral constraints that belong in rules_and_invariants and explicit assistant commitments that belong in promises_made.",
+              "description": "Task ledger for active, pending, blocked, superseded, or relevant completed work.",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -249,13 +250,13 @@
                       "properties": {
                         "start_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         }
@@ -267,7 +268,7 @@
             },
             "promises_made": {
               "type": "array",
-              "description": "Explicit assistant commitments to the user that should survive compaction. Include promises such as 'I will run X', 'I will send Y', 'I will update/commit/push Z', or equivalent accepted commitments where the user will reasonably expect follow-through or proof. Scan the WHOLE transcript for these commitments and include every one with a source_span -- this array is commonly under-populated, so re-check it before finalizing rather than leaving it empty when commitments exist. Do not infer promises from a user request alone. Exclude ordinary plans, inferred next steps, and completed work unless its promised proof/status must remain visible.",
+              "description": "Unresolved assistant commitments, plus completed commitments whose proof must remain visible.",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -304,13 +305,13 @@
                       "properties": {
                         "start_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         },
                         "end_line": {
                           "type": "integer",
-                          "description": "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+                          "description": "One-based citable transcript record number.",
                           "minimum": 1,
                           "maximum": 3
                         }
@@ -322,11 +323,94 @@
             },
             "current_work": {
               "type": "string",
-              "description": "What is actively in progress at the END of the transcript (not an earlier abandoned branch), in one or two concrete sentences: the specific task, the file or command in flight, and the immediate blocker or open decision. Name exact paths/commands/identifiers."
+              "description": "Latest non-superseded work state at the end of the transcript."
             },
             "optional_next_step": {
               "type": "string",
-              "description": "The single most actionable next step a fresh agent should take, stated as a concrete action grounded in the latest transcript state -- ideally the exact next command, file to edit, or check to run, and why. Do not leave empty and do not restate the goal abstractly; if work is complete, say what verification or follow-up remains."
+              "description": "Single next action grounded in the latest non-superseded transcript state."
+            },
+            "pickup_state": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "cwd",
+                "git_branch",
+                "current_task",
+                "next_action",
+                "next_command",
+                "active_files",
+                "tests_run",
+                "known_caveats",
+                "status_conflicts"
+              ],
+              "description": "Immediate continuation facts for a fresh agent.",
+              "properties": {
+                "cwd": {
+                  "type": "string",
+                  "description": "Current working directory if present in transcript metadata; otherwise empty."
+                },
+                "git_branch": {
+                  "type": "string",
+                  "description": "Current git branch if present in transcript metadata; otherwise empty."
+                },
+                "current_task": {
+                  "type": "string",
+                  "description": "Latest live task, not historical background."
+                },
+                "next_action": {
+                  "type": "string",
+                  "description": "Concrete next action after compaction."
+                },
+                "next_command": {
+                  "type": "string",
+                  "description": "Exact command to run next, or empty if the next action is not a command."
+                },
+                "active_files": {
+                  "type": "array",
+                  "description": "Files, dirs, scripts, or artifacts that matter for immediate continuation.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tests_run": {
+                  "type": "array",
+                  "description": "Verification commands already run and their outcome when known.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "known_caveats": {
+                  "type": "array",
+                  "description": "Warnings, assumptions, or gaps the next agent must know before acting.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "status_conflicts": {
+                  "type": "array",
+                  "description": "Older-vs-latest state conflicts and the chosen latest-state resolution.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "older_state",
+                      "latest_state",
+                      "resolution"
+                    ],
+                    "properties": {
+                      "older_state": {
+                        "type": "string"
+                      },
+                      "latest_state": {
+                        "type": "string"
+                      },
+                      "resolution": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
             },
             "source_integrity": {
               "type": "object",

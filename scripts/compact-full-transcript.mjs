@@ -1806,8 +1806,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
   };
   const lineNumber = {
     type: "integer",
-    description:
-      "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+    description: "One-based citable transcript record number.",
   };
   if (includeLineBounds) {
     lineNumber.minimum = 1;
@@ -1831,6 +1830,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       "plans_and_task_state",
       "current_work",
       "optional_next_step",
+      "pickup_state",
       "promises_made",
       "source_integrity",
     ],
@@ -1839,7 +1839,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
         type: "array",
         minItems: 1,
         description:
-          "One thematic section per distinct domain of the session. Be exhaustive: emit a separate block for every domain touched (current state, current user intent and constraints, each active artifact area, transport/capture, endpoints/payloads, model registry, tooling/skills, decisions, and pending work). Many focused blocks beat a few broad ones; do not merge unrelated domains into a single block. This handoff outlives the transcript, so a domain you omit is lost.",
+          "Focused continuation sections. Start with latest live state; include older context only when it affects continuation.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1852,14 +1852,12 @@ function createSummarySchema(recordCount = 0, options = {}) {
             },
             body: {
               type: "string",
-              description:
-                "Rendered summary content for this block. Bullet bodies must be a single item without a leading bullet marker.",
+              description: "Concise rendered summary content for this block.",
             },
             source_spans: {
               type: "array",
               minItems: 1,
-              description:
-                "Cite MULTIPLE narrow record ranges that support this block -- one fact per span. Prefer several 1-3 record citations over one wide span; every verbatim path, protocol string, RPC/service name, command, or version number named in the body needs its own span. A block with a single span almost always collapsed several facts.",
+              description: "Narrow record ranges supporting this block.",
               items: sourceSpan,
             },
           },
@@ -1867,8 +1865,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       rules_and_invariants: {
         type: "array",
-        description:
-          "Durable live instructions and constraints that should govern future work after compaction. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain what the next agent may do. Exclude ordinary completed tasks, transient exploration notes, historical user messages, rejected ideas, and old instructions that were later superseded or removed.",
+        description: "Live instructions or constraints that still govern future work.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1878,8 +1875,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
             status: {
               type: "string",
               enum: ["current", "superseded", "removed"],
-              description:
-                "Only current rules should be treated as live instructions after compaction. Use superseded or removed when later transcript state invalidates the rule.",
+              description: "Current rules are live; superseded/removed rules are historical warnings.",
             },
             source_spans: {
               type: "array",
@@ -1891,8 +1887,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       plans_and_task_state: {
         type: "array",
-        description:
-          "Work-state ledger for the task, not a rule list. Include active or pending tasks, completed milestones that matter for continuation, benchmark state, open artifacts, open questions, blockers, and concrete next actions. Order active and pending work by priority. Exclude durable behavioral constraints that belong in rules_and_invariants and explicit assistant commitments that belong in promises_made.",
+        description: "Task ledger for active, pending, blocked, superseded, or relevant completed work.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1913,8 +1908,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       promises_made: {
         type: "array",
-        description:
-          "Explicit assistant commitments to the user that should survive compaction. Include promises such as 'I will run X', 'I will send Y', 'I will update/commit/push Z', or equivalent accepted commitments where the user will reasonably expect follow-through or proof. Scan the WHOLE transcript for these commitments and include every one with a source_span -- this array is commonly under-populated, so re-check it before finalizing rather than leaving it empty when commitments exist. Do not infer promises from a user request alone. Exclude ordinary plans, inferred next steps, and completed work unless its promised proof/status must remain visible.",
+        description: "Unresolved assistant commitments, plus completed commitments whose proof must remain visible.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1935,13 +1929,78 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       current_work: {
         type: "string",
-        description:
-          "What is actively in progress at the END of the transcript (not an earlier abandoned branch), in one or two concrete sentences: the specific task, the file or command in flight, and the immediate blocker or open decision. Name exact paths/commands/identifiers.",
+        description: "Latest non-superseded work state at the end of the transcript.",
       },
       optional_next_step: {
         type: "string",
-        description:
-          "The single most actionable next step a fresh agent should take, stated as a concrete action grounded in the latest transcript state -- ideally the exact next command, file to edit, or check to run, and why. Do not leave empty and do not restate the goal abstractly; if work is complete, say what verification or follow-up remains.",
+        description: "Single next action grounded in the latest non-superseded transcript state.",
+      },
+      pickup_state: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "cwd",
+          "git_branch",
+          "current_task",
+          "next_action",
+          "next_command",
+          "active_files",
+          "tests_run",
+          "known_caveats",
+          "status_conflicts",
+        ],
+        description: "Immediate continuation facts for a fresh agent.",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Current working directory if present in transcript metadata; otherwise empty.",
+          },
+          git_branch: {
+            type: "string",
+            description: "Current git branch if present in transcript metadata; otherwise empty.",
+          },
+          current_task: {
+            type: "string",
+            description: "Latest live task, not historical background.",
+          },
+          next_action: {
+            type: "string",
+            description: "Concrete next action after compaction.",
+          },
+          next_command: {
+            type: "string",
+            description: "Exact command to run next, or empty if the next action is not a command.",
+          },
+          active_files: {
+            type: "array",
+            description: "Files, dirs, scripts, or artifacts that matter for immediate continuation.",
+            items: { type: "string" },
+          },
+          tests_run: {
+            type: "array",
+            description: "Verification commands already run and their outcome when known.",
+            items: { type: "string" },
+          },
+          known_caveats: {
+            type: "array",
+            description: "Warnings, assumptions, or gaps the next agent must know before acting.",
+            items: { type: "string" },
+          },
+          status_conflicts: {
+            type: "array",
+            description: "Older-vs-latest state conflicts and the chosen latest-state resolution.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["older_state", "latest_state", "resolution"],
+              properties: {
+                older_state: { type: "string" },
+                latest_state: { type: "string" },
+                resolution: { type: "string" },
+              },
+            },
+          },
+        },
       },
       source_integrity: {
         type: "object",
@@ -2026,16 +2085,14 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, ad
       ]
     : [];
   return [
-    "You are a compaction model for Claude Code session transcripts.",
-    "Your job is to produce a fresh summarized starting point for continued work after compaction.",
-    "Optimize for the very next follow-up prompt, including any queued follow-up supplied with this request.",
-    "Treat this as a continuation handoff, not a retrospective summary.",
-    "Preserve the active working set and compress older material aggressively.",
+    "You produce continuation handoffs for Claude Code session transcripts.",
+    "Optimize for the next agent picking up the live task, not for historical completeness.",
+    "Preserve the active working set and only the older context that still changes what should happen next.",
     "",
-    "Critical shape requirement:",
-    "- Do not omit late-session state.",
-    "- Treat later user messages as more important than earlier abandoned plans.",
-    "- If older context and late-session state conflict, prefer the corrected late-session state and explain only the delta that still matters.",
+    "Final-state priority:",
+    "- Read the final visible records before writing JSON.",
+    "- current_work and optional_next_step must come from the latest non-superseded state.",
+    "- If older context and late-session state conflict, mark the older item done/superseded instead of pending.",
     "",
     "Return strict JSON only. The JSON must match the provided schema.",
     ...customInstructionsBlock,
@@ -2043,47 +2100,41 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, ad
     "",
     "Evidence span format:",
     ...rendererEvidenceInstructions(stats.transcriptRenderer),
-    "- summary_blocks is the primary structured output. It must be ordered exactly as the continuation summary should read.",
-    "- Every summary_blocks item must include one or more source_spans pointing to the exact supporting record ranges.",
+    "- summary_blocks is the primary structured output. Order it as the continuation summary should read.",
+    "- Every summary_blocks item needs source_spans pointing to supporting record ranges.",
     "- The authoritative source record is the cited source_spans plus harness rehydration, not long verbatim body text.",
     "- Do not copy large verbatim transcript excerpts into the JSON response. The harness will extract exact record content itself from the selected source spans.",
     "- Do not emit verbatim code/config/command blocks in summary_blocks. Summarize them and cite the exact source spans; the harness preserves verbatim evidence separately.",
     "- Bullet bodies must be a single item and must not include a leading bullet marker.",
     "- Only records with extractable content are shown and numbered. Cite only line numbers present in the transcript below.",
-    "- source_integrity.verbatim_span_grounded must be true.",
     "",
-    "Compaction requirements:",
-    "- The harness will render the final markdown summary from summary_blocks and separately emit a rehydrated evidence view from source_spans.",
-    "- Prioritize continuation utility over historical exhaustiveness.",
-    "- Organize content around: task overview, current state, important discoveries, next steps, and context to preserve.",
-    "- Think in two bands: active context and archived context. Active context is what the next agent needs immediately; archived context is only older material needed to avoid repeated mistakes or lost commitments.",
-    "- Keep abandoned branches brief unless they still constrain current work, explain a bug, or explain why a later correction matters.",
+      "Compaction requirements:",
+      "- The harness will render the final markdown summary from summary_blocks and separately emit a rehydrated evidence view from source_spans.",
+      "- Prioritize continuation utility over historical exhaustiveness.",
+      "- Organize content around: current state, latest user intent, active artifacts, live constraints, blockers, and next action.",
+      "- Fill pickup_state as an immediate handoff card: cwd, branch, current task, exact next action, exact next command if any, active files/artifacts, tests already run, caveats, and older-vs-latest conflict resolutions.",
+      "- Keep abandoned branches brief unless they still constrain current work, explain a bug, or explain why a later correction matters.",
     "- Preserve failed approaches only when they prevent repeated work or explain a current constraint.",
     "- Prefer durable state over chronology: capture decisions, invariants, open tasks, exact artifacts, open questions, and unresolved blockers before narrating what happened.",
     "- Prefer block-style handoff sections over a play-by-play timeline.",
-    "- A fresh agent should know the current objective, active artifacts, user preferences, domain-specific context, constraints, blockers, and next command or check.",
-    "- Preserve explicit user instructions, constraints, file paths, commands, errors, pending work, and security-relevant instructions. Preserve security-relevant user constraints verbatim.",
+    "- Preserve exact user instructions, file paths, commands, errors, and security-relevant constraints when they are live.",
     "- Classify continuation state into three distinct buckets:",
-    "  - rules_and_invariants: live instructions or constraints that should govern future behavior. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain future work. Do not include completed tasks, one-off observations, generic errors, old user wording preserved only for history, or abandoned ideas.",
-    "  - plans_and_task_state: work ledger, not behavior policy. Include active/pending/done task state, benchmark status, open artifacts, blockers, open questions, and concrete next actions. Do not include durable rules or assistant promises unless the work item itself also needs tracking.",
-    "  - promises_made: explicit assistant commitments to the user. Include promised deliverables, checks, reports, commits, pushes, or follow-up actions where the user would expect proof or completion. Do not infer promises from a user request alone, and do not list ordinary internal next steps as promises.",
+    "  - rules_and_invariants: live instructions or constraints that should govern future behavior.",
+    "  - plans_and_task_state: work ledger, not behavior policy. Include active/pending/done task state, blockers, open questions, and concrete next actions.",
+    "  - promises_made: unresolved assistant commitments, plus completed commitments whose proof must remain visible.",
     "- If the same transcript event has multiple roles, split it only when each role matters: a user constraint belongs in rules_and_invariants; the task progress belongs in plans_and_task_state; the assistant's explicit commitment belongs in promises_made.",
-    "- If a later user message removes or supersedes an earlier rule, mark that rule status as removed or superseded. Do not present removed or superseded rules as live instructions.",
-    "- Keep removed or superseded rules only when they prevent drift or explain why a tempting older instruction is no longer live.",
+    "- If a later record removes or supersedes earlier work or rules, mark the earlier item done/superseded/removed. Do not present it as pending or live.",
     "- Preserve exact symbols, command names, endpoint paths, file names, hook names, setting names, and error text when they matter.",
     "- Do not pin irrelevant literal wording or incidental implementation details unless they are part of a contract or a current task.",
-    "- Do not output a user-message inventory. The harness extracts user-authored messages deterministically from the transcript.",
-    "- Do not output compatibility inventories such as source_lines_used, primary_request_and_intent, key_technical_concepts, files_and_code_sections, errors_and_fixes, problem_solving, or pending_tasks unless the active provider schema explicitly asks for them. The harness derives those local fields from anchored sections.",
-    "- current_work and optional_next_step must reflect the end of the transcript, not an earlier branch of work.",
     "- If the transcript includes an assistant mistake later corrected by the user, summarize the corrected state and mention the correction if it changes what should happen next.",
     "- The first summary_blocks items should establish, in order: current state, current user intent/constraints, active files/artifacts, unresolved work/next step. Put older background later.",
     "- When there is too much material, drop redundant intermediate exploration before dropping the final task state.",
-    "- Echo the transcript sha256 exactly in source_integrity.transcript_sha256.",
-    "- Echo the number of transcript records shown below in source_integrity.transcript_lines_seen.",
     "",
     "Transcript metadata:",
-    "- path: " + stats.inputPath,
-    "- sha256: " + stats.sha256,
+      "- path: " + stats.inputPath,
+      ...(stats.cwd ? ["- cwd: " + stats.cwd] : []),
+      ...(stats.gitBranch ? ["- git branch: " + stats.gitBranch] : []),
+      "- sha256: " + stats.sha256,
     "- bytes: " + stats.bytes,
     "- transcript records shown (citable): " + stats.records,
     "- prompt transcript renderer: " + stats.transcriptRenderer,
@@ -2096,6 +2147,11 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, ad
     ...(adaptationLines && adaptationLines.length
       ? ["", "=== MODEL-SPECIFIC COMPLETENESS REQUIREMENTS ===", ...adaptationLines]
       : []),
+    "",
+    "=== FINAL STATE CHECK ===",
+    "Before finalizing, reread the final 20 records. If they show work is already done, current_work",
+    "and optional_next_step must not tell the next agent to do that work again. Use older records only",
+    "as supporting evidence for the latest non-superseded state.",
     ...(reaskFeedback && reaskFeedback.trim()
       ? ["", "=== CORRECTION REQUIRED (your previous attempt was incomplete) ===", reaskFeedback.trim()]
       : []),
@@ -2106,8 +2162,10 @@ function buildSharedPromptMarkdown() {
   const prompt = buildFullTranscriptPrompt({
     wrappedTranscript: "{{WRAPPED_TRANSCRIPT_JSONL}}",
     stats: {
-      inputPath: "{{INPUT_PATH}}",
-      sha256: "{{TRANSCRIPT_SHA256}}",
+        inputPath: "{{INPUT_PATH}}",
+        cwd: "{{CWD}}",
+        gitBranch: "{{GIT_BRANCH}}",
+        sha256: "{{TRANSCRIPT_SHA256}}",
       bytes: "{{TRANSCRIPT_BYTES}}",
       records: "{{TRANSCRIPT_RECORDS}}",
       transcriptRenderer: "{{TRANSCRIPT_RENDERER}}",
@@ -2743,10 +2801,34 @@ function validateSummary(value, lineHashArtifacts) {
   if (value.source_integrity.verbatim_span_grounded !== true) {
     return "source_integrity.verbatim_span_grounded is not true";
   }
-  if (typeof value.source_integrity.limitations !== "string") {
-    return "source_integrity.limitations missing";
-  }
-  if (value.summary_blocks.length === 0) return "summary_blocks is empty";
+    if (typeof value.source_integrity.limitations !== "string") {
+      return "source_integrity.limitations missing";
+    }
+    if (!value.pickup_state || typeof value.pickup_state !== "object" || Array.isArray(value.pickup_state)) {
+      return "pickup_state missing";
+    }
+    for (const key of ["cwd", "git_branch", "current_task", "next_action", "next_command"]) {
+      if (typeof value.pickup_state[key] !== "string") return "pickup_state." + key + " missing";
+    }
+    for (const key of ["active_files", "tests_run", "known_caveats", "status_conflicts"]) {
+      if (!Array.isArray(value.pickup_state[key])) return "pickup_state." + key + " is not an array";
+    }
+    if (value.pickup_state.current_task.trim().length === 0) return "pickup_state.current_task missing";
+    if (value.pickup_state.next_action.trim().length === 0) return "pickup_state.next_action missing";
+    for (const key of ["active_files", "tests_run", "known_caveats"]) {
+      for (const [idx, item] of value.pickup_state[key].entries()) {
+        if (typeof item !== "string") return "pickup_state." + key + "[" + idx + "] is not a string";
+      }
+    }
+    for (const [idx, item] of value.pickup_state.status_conflicts.entries()) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return "pickup_state.status_conflicts[" + idx + "] is not an object";
+      }
+      for (const key of ["older_state", "latest_state", "resolution"]) {
+        if (typeof item[key] !== "string") return "pickup_state.status_conflicts[" + idx + "]." + key + " missing";
+      }
+    }
+    if (value.summary_blocks.length === 0) return "summary_blocks is empty";
   const maxLine = lineHashArtifacts.entries.length;
   const validateSourceSpans = (label, sourceSpans) => {
     if (!Array.isArray(sourceSpans) || sourceSpans.length === 0) {
@@ -3001,7 +3083,183 @@ function deriveCompatibilityFields(summary) {
   };
 }
 
-function normalizeDerivedSummaryFields(summary) {
+function compactStringArray(value, fallback = [], max = 12) {
+  const out = [];
+  const add = (item) => pushUniqueText(out, item, max);
+  if (Array.isArray(value)) {
+    for (const item of value) add(item);
+  }
+  for (const item of fallback) add(item);
+  return out;
+}
+
+function pickupTextCorpus(summary) {
+  return [
+    summary.current_work,
+    summary.optional_next_step,
+    ...(summary.summary_blocks || []).map((item) => item?.body),
+    ...(summary.plans_and_task_state || []).map((item) => item?.item),
+    ...(summary.promises_made || []).map((item) => item?.promise),
+  ]
+    .map(compactText)
+    .filter(Boolean);
+}
+
+function sanitizeCommandCandidate(value) {
+  let text = String(value || "").trim();
+  if (
+    (text.startsWith("`") && text.endsWith("`")) ||
+    (text.startsWith("\"") && text.endsWith("\"")) ||
+    (text.startsWith("'") && text.endsWith("'")) ||
+    (text.startsWith("(") && text.endsWith(")"))
+  ) {
+    text = text.slice(1, -1).trim();
+  }
+  return text.replace(/[.。]\s*$/g, "").trim();
+}
+
+function isEmptyPickupValue(value) {
+  return /^(?:none\b.*|n\/a\b.*|null\b.*|no action\b.*|not required\b.*)$/i.test(compactText(value));
+}
+
+function looksLikeShellCommand(value) {
+  const text = sanitizeCommandCandidate(value);
+  if (!text || text.length > 400) return false;
+  if (/^[^\s]+:\s+/.test(text)) return false;
+  if (/^(?:npm|pnpm|yarn|bun|node|python3?|pytest|cargo|go|just|make|bash|sh|git|npx|uv|ruff|biome|tsc|vitest|jest|wrangler|patchpress|claude)\b/.test(text)) {
+    return true;
+  }
+  if (/^(?:\.{0,2}\/|[A-Za-z0-9_.-]+\/)[A-Za-z0-9_./:@%+-]+\.(?:sh|mjs|js|ts|py|rb|go|rs)\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function extractNextCommand(summary, prior) {
+  if (looksLikeShellCommand(prior)) return sanitizeCommandCandidate(prior);
+  const candidates = [];
+  for (const text of pickupTextCorpus(summary)) {
+    const inline = text.match(/`([^`\n]{2,400})`/g) || [];
+    for (const item of inline) candidates.push(item.slice(1, -1));
+    const afterColon = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
+    if (afterColon) candidates.push(afterColon);
+    const commandMatch = text.match(
+      /\b(?:npm|pnpm|yarn|bun|node|python3?|pytest|cargo|go|just|make|bash|sh|git|npx|uv|ruff|biome|tsc|vitest|jest|wrangler|patchpress|claude)\s+[^\n;]{1,360}/
+    );
+    if (commandMatch) candidates.push(commandMatch[0]);
+    const scriptMatch = text.match(
+      /(?:^|[\s:`])((?:\.{0,2}\/|[A-Za-z0-9_.-]+\/)[A-Za-z0-9_./:@%+-]+\.(?:sh|mjs|js|ts|py|rb|go|rs)\b[^\n;]{0,320})/
+    );
+    if (scriptMatch) candidates.push(scriptMatch[1]);
+  }
+  for (const candidate of candidates) {
+    if (looksLikeShellCommand(candidate)) return sanitizeCommandCandidate(candidate);
+  }
+  return "";
+}
+
+function isLikelyPickupPath(value) {
+  const text = sanitizeCommandCandidate(value);
+  if (!text || text.length > 240) return false;
+  if (/^https?:\/\//.test(text)) return false;
+  if (/^(?:\/|\.{1,2}\/)/.test(text)) return true;
+  if (/^(?:scripts|src|test|tests|docs|runs|transcripts|references|plugins|packages|apps|\.agents|\.github)\//.test(text)) {
+    return true;
+  }
+  return /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/.test(text);
+}
+
+function derivePickupFiles(summary, fallbackFiles = []) {
+  const files = [];
+  for (const item of fallbackFiles || []) {
+    if (typeof item === "string") pushUniqueText(files, item, 12);
+  }
+  for (const item of summary.files_and_code_sections || []) {
+    if (isLikelyPickupPath(item?.path)) pushUniqueText(files, item.path, 12);
+  }
+  const pathPattern =
+    /(?:^|[\s("'`])((?:\/[A-Za-z0-9._~+@:%-]+)+|(?:\.{1,2}\/[A-Za-z0-9._~+@:%/-]+)|(?:(?:scripts|src|test|tests|docs|runs|transcripts|references|plugins|packages|apps|\.agents|\.github)\/[A-Za-z0-9._~+@:%/-]+))(?=$|[\s)"'`,;:])/g;
+  for (const text of pickupTextCorpus(summary)) {
+    let match;
+    while ((match = pathPattern.exec(text)) !== null) {
+      if (isLikelyPickupPath(match[1])) pushUniqueText(files, match[1], 12);
+    }
+  }
+  return files;
+}
+
+function derivePickupTests(summary, fallbackTests = []) {
+  const tests = compactStringArray(fallbackTests, [], 12);
+  const testPattern =
+    /\b(?:npm|pnpm|yarn|bun|node|python3?|pytest|cargo|go|just|make|bash|sh|npx|uv)\s+[^\n.;]*(?:test|check|lint|verify|gate|pytest|vitest|jest|cargo test)[^\n.;]*/gi;
+  for (const text of pickupTextCorpus(summary)) {
+    let match;
+    while ((match = testPattern.exec(text)) !== null) pushUniqueText(tests, match[0], 12);
+  }
+  return tests;
+}
+
+function normalizeStatusConflicts(value) {
+  if (!Array.isArray(value)) return [];
+  const conflicts = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const older = compactText(item.older_state);
+    const latest = compactText(item.latest_state);
+    const resolution = compactText(item.resolution);
+    if (!older && !latest && !resolution) continue;
+    conflicts.push({
+      older_state: older,
+      latest_state: latest,
+      resolution,
+    });
+    if (conflicts.length >= 8) break;
+  }
+  return conflicts;
+}
+
+function normalizePickupState(summary, stats = {}) {
+  const prior =
+    summary.pickup_state && typeof summary.pickup_state === "object" && !Array.isArray(summary.pickup_state)
+      ? summary.pickup_state
+      : {};
+  const priorCurrentTask = isEmptyPickupValue(prior.current_task) ? "" : compactText(prior.current_task);
+  const priorNextAction = isEmptyPickupValue(prior.next_action) ? "" : compactText(prior.next_action);
+  const currentTask = priorCurrentTask || compactText(summary.current_work);
+  const nextAction = priorNextAction || compactText(summary.optional_next_step);
+  const fallbackFiles = Array.isArray(prior.active_files) ? prior.active_files : [];
+  const fallbackTests = Array.isArray(prior.tests_run) ? prior.tests_run : [];
+  summary.pickup_state = {
+    cwd: compactText(stats.cwd) || compactText(prior.cwd),
+    git_branch: compactText(stats.gitBranch) || compactText(prior.git_branch),
+    current_task: currentTask,
+    next_action: nextAction,
+    next_command: extractNextCommand(summary, prior.next_command),
+    active_files: derivePickupFiles(summary, fallbackFiles),
+    tests_run: derivePickupTests(summary, fallbackTests),
+    known_caveats: compactStringArray(prior.known_caveats, [], 12),
+    status_conflicts: normalizeStatusConflicts(prior.status_conflicts),
+  };
+}
+
+function normalizeSourceIntegrity(summary, stats = {}) {
+  const prior =
+    summary.source_integrity && typeof summary.source_integrity === "object" && !Array.isArray(summary.source_integrity)
+      ? summary.source_integrity
+      : {};
+  summary.source_integrity = {
+    transcript_sha256: typeof stats.sha256 === "string" ? stats.sha256 : prior.transcript_sha256 || "",
+    transcript_lines_seen: Number.isInteger(stats.recordCount)
+      ? stats.recordCount
+      : Number.isInteger(prior.transcript_lines_seen)
+        ? prior.transcript_lines_seen
+        : 0,
+    verbatim_span_grounded: true,
+    limitations: typeof prior.limitations === "string" ? prior.limitations : "",
+  };
+}
+
+function normalizeDerivedSummaryFields(summary, stats = {}) {
   // Relax non-conforming block formats before validation. This runs on every
   // response (fresh provider output and reloaded output alike), so a single
   // multi-line bullet no longer aborts a fresh run with a hard validation fail.
@@ -3012,6 +3270,8 @@ function normalizeDerivedSummaryFields(summary) {
     if (!Array.isArray(summary[key])) compatibilityArraysDefaulted.push(key);
     summary[key] = derived[key];
   }
+  normalizePickupState(summary, stats);
+  normalizeSourceIntegrity(summary, stats);
   summary.source_lines_used = collectSourceLines(summary);
   return {
     compatibilityArraysDefaulted,
@@ -3604,6 +3864,93 @@ function buildEvidenceCapsules(rehydratedSpans) {
   }));
 }
 
+function collapseLatestTailText(text, maxChars = 2400) {
+  const value = String(text || "").trim();
+  if (value.length <= maxChars) {
+    return {
+      text: value,
+      collapsed: false,
+      omitted_chars: 0,
+    };
+  }
+  const head = value.slice(0, 1200).replace(/\n$/, "");
+  const tail = value.slice(-800).replace(/^\n/, "");
+  return {
+    text: [head, "", "[... omitted " + Math.max(value.length - head.length - tail.length, 0) + " chars ...]", "", tail].join("\n"),
+    collapsed: true,
+    omitted_chars: Math.max(value.length - head.length - tail.length, 0),
+  };
+}
+
+function buildLatestTranscriptTail(records, limit = 12) {
+  const startIndex = Math.max(records.length - limit, 0);
+  return records.slice(startIndex).map((record, idx) => {
+    const line = startIndex + idx + 1;
+    const raw = JSON.stringify(record);
+    const text = extractRecordText(record, {
+      lineNumber: line,
+      cwdPrefix: transcriptCwdPrefix || null,
+    });
+    const collapsed = collapseLatestTailText(text || previewRecord(raw));
+    return {
+      line,
+      type: record.type || "unknown",
+      role: record.message?.role || null,
+      timestamp: record.timestamp || null,
+      record_sha256: sha256Text(raw),
+      char_count: String(text || "").length,
+      collapsed: collapsed.collapsed,
+      omitted_chars: collapsed.omitted_chars,
+      text: collapsed.text,
+    };
+  });
+}
+
+function addVerificationNotesFromLatestTail(pickup, latestTailRecords) {
+  for (const record of latestTailRecords || []) {
+    const text = record.text || "";
+    const descriptionMatch = text.match(/"description"\s*:\s*"([^"]*(?:[Vv]erify|[Tt]est|[Cc]heck)[^"]*)"/);
+    if (descriptionMatch) pushUniqueText(pickup.tests_run, descriptionMatch[1], 12);
+    const commandMatch = text.match(/"command"\s*:\s*"([^"]*(?:test|verify|check|lint|pytest|vitest|jest)[^"]*)"/i);
+    if (commandMatch) pushUniqueText(pickup.tests_run, commandMatch[1], 12);
+    if (/\bALL PASS\b/.test(text)) pushUniqueText(pickup.tests_run, "Latest tail verification reported ALL PASS.", 12);
+    const behaviorMatch = text.match(/\bBehavior check \((all pass)\)/i);
+    if (behaviorMatch) pushUniqueText(pickup.tests_run, "Behavior check (" + behaviorMatch[1].toLowerCase() + ").", 12);
+  }
+}
+
+function enrichPickupStateForHandoff(pickupState, handoffUserMessageSelection, latestTailRecords) {
+  const pickup = JSON.parse(JSON.stringify(pickupState || {}));
+  pickup.known_caveats = Array.isArray(pickup.known_caveats) ? pickup.known_caveats : [];
+  pickup.status_conflicts = Array.isArray(pickup.status_conflicts) ? pickup.status_conflicts : [];
+  pickup.tests_run = Array.isArray(pickup.tests_run) ? pickup.tests_run : [];
+  addVerificationNotesFromLatestTail(pickup, latestTailRecords);
+  const selectedText = (handoffUserMessageSelection?.selected || [])
+    .map((message) => message.text || "")
+    .join("\n");
+  const currentAndNext = [pickup.current_task, pickup.next_action].join("\n");
+  const completedNotice = /completed \(exit code 0\)|<status>completed<\/status>|"status"\s*:\s*"completed"/i.test(selectedText);
+  const runInstruction = /\b(run|execute|rerun|re-run)\b/i.test(currentAndNext);
+  if (completedNotice && runInstruction) {
+    pushUniqueText(
+      pickup.known_caveats,
+      "A selected historical task notification says a background command completed successfully; verify the latest tail/source state before re-running similar work.",
+      12
+    );
+    const alreadyCaptured = pickup.status_conflicts.some((item) =>
+      /completed/i.test(item.older_state + " " + item.latest_state + " " + item.resolution)
+    );
+    if (!alreadyCaptured) {
+      pickup.status_conflicts.push({
+        older_state: "Historical selected user/task notification reports completion with exit code 0.",
+        latest_state: currentAndNext.trim(),
+        resolution: "Do not blindly re-run; reconcile against Latest Transcript Tail and source transcript first.",
+      });
+    }
+  }
+  return pickup;
+}
+
 function buildHandoffState({
   summary,
   stats,
@@ -3611,8 +3958,11 @@ function buildHandoffState({
   beforePath,
   rehydratedSpans,
   handoffUserMessageSelection,
+  records,
 }) {
   const evidenceCapsules = buildEvidenceCapsules(rehydratedSpans);
+  const latestTailRecords = buildLatestTranscriptTail(records || [], 12);
+  const pickupState = enrichPickupStateForHandoff(summary.pickup_state, handoffUserMessageSelection, latestTailRecords);
   return {
     schema: HANDOFF_STATE_SCHEMA,
     version: 1,
@@ -3628,15 +3978,21 @@ function buildHandoffState({
         renderer: stats.transcriptRenderer,
       },
     ],
-    active_state: {
-      current_objective: summary.current_work,
-      next_step: summary.optional_next_step,
-      open_questions: [],
-      blockers: (summary.plans_and_task_state || [])
+      active_state: {
+        current_objective: summary.current_work,
+        next_step: summary.optional_next_step,
+        open_questions: [],
+        blockers: (summary.plans_and_task_state || [])
         .filter((item) => item.status === "blocked")
-        .map((item) => item.item),
-    },
-    summary_markdown: summary.summary_markdown,
+          .map((item) => item.item),
+      },
+      pickup_state: pickupState,
+      latest_transcript_tail: {
+        limit: 12,
+        records: latestTailRecords,
+        conflict_policy: "Final tail records are deterministic latest context and outrank older selected user-message excerpts when state conflicts.",
+      },
+      summary_markdown: summary.summary_markdown,
     summary_blocks: summary.summary_blocks,
     rules_and_invariants: summary.rules_and_invariants,
     plans_and_task_state: summary.plans_and_task_state,
@@ -3670,10 +4026,34 @@ function isSha256Hex(value) {
 }
 
 function validateHandoffState(state) {
-  if (!state || typeof state !== "object" || Array.isArray(state)) return "handoff state is not an object";
-  if (state.schema !== HANDOFF_STATE_SCHEMA) return "handoff state schema invalid";
-  if (!Array.isArray(state.user_intent_events)) return "handoff state user_intent_events missing";
-  if (!Array.isArray(state.evidence_capsules)) return "handoff state evidence_capsules missing";
+    if (!state || typeof state !== "object" || Array.isArray(state)) return "handoff state is not an object";
+    if (state.schema !== HANDOFF_STATE_SCHEMA) return "handoff state schema invalid";
+    if (!state.pickup_state || typeof state.pickup_state !== "object" || Array.isArray(state.pickup_state)) {
+      return "handoff state pickup_state missing";
+    }
+    for (const key of ["cwd", "git_branch", "current_task", "next_action", "next_command"]) {
+      if (typeof state.pickup_state[key] !== "string") return "handoff state pickup_state." + key + " missing";
+    }
+    for (const key of ["active_files", "tests_run", "known_caveats", "status_conflicts"]) {
+      if (!Array.isArray(state.pickup_state[key])) return "handoff state pickup_state." + key + " missing";
+    }
+    if (!state.latest_transcript_tail || typeof state.latest_transcript_tail !== "object") {
+      return "handoff state latest_transcript_tail missing";
+    }
+    if (!Array.isArray(state.latest_transcript_tail.records)) {
+      return "handoff state latest_transcript_tail.records missing";
+    }
+    for (const [idx, record] of state.latest_transcript_tail.records.entries()) {
+      const label = "handoff state latest_transcript_tail.records[" + idx + "]";
+      if (!Number.isInteger(record.line) || record.line < 1) return label + ".line invalid";
+      if (typeof record.type !== "string" || !record.type) return label + ".type missing";
+      if (!isSha256Hex(record.record_sha256)) return label + ".record_sha256 invalid";
+      if (typeof record.text !== "string") return label + ".text missing";
+      if (typeof record.collapsed !== "boolean") return label + ".collapsed invalid";
+      if (!Number.isInteger(record.omitted_chars) || record.omitted_chars < 0) return label + ".omitted_chars invalid";
+    }
+    if (!Array.isArray(state.user_intent_events)) return "handoff state user_intent_events missing";
+    if (!Array.isArray(state.evidence_capsules)) return "handoff state evidence_capsules missing";
   for (const [idx, event] of state.user_intent_events.entries()) {
     const label = "handoff state user_intent_events[" + idx + "]";
     if (typeof event.id !== "string" || !event.id) return label + ".id missing";
@@ -3812,6 +4192,70 @@ function extractEvidenceLiteralIndex(rehydratedSpans, limit = 128) {
   return literals;
 }
 
+function renderPickupStateSection(state) {
+  const pickup = state.pickup_state;
+  if (!pickup || typeof pickup !== "object") return [];
+  const lines = ["## Pickup State", ""];
+  if (pickup.cwd) lines.push("- CWD: `" + pickup.cwd.replace(/`/g, "\\`") + "`");
+  if (pickup.git_branch) lines.push("- Git branch: `" + pickup.git_branch.replace(/`/g, "\\`") + "`");
+  if (pickup.current_task) lines.push("- Current task: " + pickup.current_task);
+  if (pickup.next_action) lines.push("- Next action: " + pickup.next_action);
+  if (pickup.next_command) {
+    lines.push("- Next command:");
+    pushFencedText(lines, pickup.next_command, "sh");
+  }
+  if (Array.isArray(pickup.active_files) && pickup.active_files.length > 0) {
+    lines.push(
+      "- Active files/artifacts: " +
+        pickup.active_files.map((item) => "`" + item.replace(/`/g, "\\`") + "`").join(", ")
+    );
+  }
+  if (Array.isArray(pickup.tests_run) && pickup.tests_run.length > 0) {
+    lines.push("- Tests run:");
+    for (const item of pickup.tests_run) lines.push("  - " + item);
+  }
+  if (Array.isArray(pickup.known_caveats) && pickup.known_caveats.length > 0) {
+    lines.push("- Caveats:");
+    for (const item of pickup.known_caveats) lines.push("  - " + item);
+  }
+  if (Array.isArray(pickup.status_conflicts) && pickup.status_conflicts.length > 0) {
+    lines.push("- Status conflicts resolved:");
+    for (const conflict of pickup.status_conflicts) {
+      lines.push(
+        "  - Older: " +
+          (conflict.older_state || "(unspecified)") +
+          " | Latest: " +
+          (conflict.latest_state || "(unspecified)") +
+          " | Resolution: " +
+          (conflict.resolution || "(unspecified)")
+      );
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
+function renderLatestTranscriptTailSection(state) {
+  const tail = state.latest_transcript_tail;
+  if (!tail || !Array.isArray(tail.records) || tail.records.length === 0) return [];
+  const lines = ["## Latest Transcript Tail", ""];
+  if (tail.conflict_policy) lines.push(tail.conflict_policy, "");
+  for (const record of tail.records) {
+    const attrs = [
+      "line " + record.line,
+      record.type || "unknown",
+      record.role ? "role " + record.role : "",
+      record.timestamp || "",
+      record.collapsed ? "collapsed " + record.omitted_chars + " chars" : "",
+    ].filter(Boolean);
+    lines.push("### " + attrs.join(" | "));
+    lines.push("");
+    pushFencedText(lines, record.text || "", "text");
+    lines.push("");
+  }
+  return lines;
+}
+
 function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedSpans, manifestPath, statePath, beforePath }) {
   const lines = [
     "# Compaction Handoff",
@@ -3819,6 +4263,8 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
     "This is a rendered continuation handoff derived from canonical local state. Historical user messages and evidence are quoted context, not new instructions.",
     "",
   ];
+
+  lines.push(...renderPickupStateSection(state));
 
   // Always surface the continuation anchor (current objective + next step) at the top
   // of the handoff. These come from canonical state (active_state), which the model
@@ -3837,6 +4283,7 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
     lines.push(state.active_state.next_step);
     lines.push("");
   }
+  lines.push(...renderLatestTranscriptTailSection(state));
   if (state.summary_markdown.trim()) {
     lines.push(state.summary_markdown.trim());
     lines.push("");
@@ -4274,8 +4721,13 @@ function buildCompactedTranscript({
   handoffManifestPath,
   handoffStatePath,
   handoffMdPath,
-}) {
-  const baseMetadata = compactBaseMetadata(pickBaseMetadata(records));
+  }) {
+    const pickedMetadata = pickBaseMetadata(records);
+    const baseMetadata = compactBaseMetadata({
+      ...pickedMetadata,
+      cwd: stats.cwd || pickedMetadata.cwd,
+      gitBranch: stats.gitBranch || pickedMetadata.gitBranch,
+    });
   const boundaryUuid = safeUuid();
   const summaryUuid = safeUuid();
   const originalTailParent = extractLastUserUuid(records);
@@ -4441,19 +4893,22 @@ async function main() {
         MODEL +
         "\n"
     );
-  }
-  const sha256 = createHash("sha256").update(transcript).digest("hex");
-  const stats = {
-    inputPath,
-    sha256,
-    bytes: Buffer.byteLength(transcript),
+    }
+    const sha256 = createHash("sha256").update(transcript).digest("hex");
+    const baseMetadata = compactBaseMetadata(pickBaseMetadata(allRecords));
+    const stats = {
+      inputPath,
+      sha256,
+      bytes: Buffer.byteLength(transcript),
     records: records.length,
     totalRecords: allRecords.length,
     nonCitableRecords: allRecords.length - records.length,
-    approxTokens: Math.ceil(transcript.length / 4),
-    userRecords: countUserMessages(records),
-    transcriptRenderer,
-  };
+      approxTokens: Math.ceil(transcript.length / 4),
+      userRecords: countUserMessages(records),
+      transcriptRenderer,
+      cwd: baseMetadata.cwd || "",
+      gitBranch: baseMetadata.gitBranch || "",
+    };
   if (rendererStatsReportPath) {
     const reportPath = resolve(rendererStatsReportPath);
     const markdown = renderRendererStatsMarkdown({
@@ -4883,7 +5338,12 @@ async function main() {
 
   // Canonicalize local-only fields before validation. Provider schemas stay
   // focused on anchored output; the harness derives compatibility fields.
-  const derivedSummaryNormalization = normalizeDerivedSummaryFields(summary);
+    const derivedSummaryNormalization = normalizeDerivedSummaryFields(summary, {
+      sha256,
+      recordCount: records.length,
+      cwd: stats.cwd,
+      gitBranch: stats.gitBranch,
+    });
 
   const validationError = validateSummary(summary, lineHashArtifacts);
   if (validationError) {
@@ -5012,14 +5472,15 @@ async function main() {
   await writeFile(rehydratedSpansPath, JSON.stringify(rehydratedSpans, null, 2) + "\n");
   await writeFile(rehydratedSummaryPath, renderRehydratedSummary(summary, rehydratedSpans));
 
-  const handoffState = buildHandoffState({
-    summary,
-    stats,
-    run,
-    beforePath,
-    rehydratedSpans,
-    handoffUserMessageSelection,
-  });
+    const handoffState = buildHandoffState({
+      summary,
+      stats,
+      run,
+      beforePath,
+      rehydratedSpans,
+      handoffUserMessageSelection,
+      records,
+    });
   const handoffStateValidationError = validateHandoffState(handoffState);
   if (handoffStateValidationError) {
     const failure = {

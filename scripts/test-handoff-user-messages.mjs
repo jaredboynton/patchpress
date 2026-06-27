@@ -149,11 +149,18 @@ function assertCanonicalHandoffArtifacts({
 }) {
   assertEqual(state.schema, "handoff-state.v1", label + " state schema");
   assertEqual(manifest.schema, "handoff-manifest.v1", label + " manifest schema");
-  assert(Array.isArray(state.user_intent_events), label + " user_intent_events missing");
-  assert(state.user_intent_events.length > 0, label + " user_intent_events empty");
-  assert(Array.isArray(state.evidence_capsules), label + " evidence_capsules missing");
-  assert(state.evidence_capsules.length > 0, label + " evidence_capsules empty");
-  assertIncludes(handoffMarkdown, "## User Messages", label + " handoff markdown");
+	  assert(Array.isArray(state.user_intent_events), label + " user_intent_events missing");
+	  assert(state.user_intent_events.length > 0, label + " user_intent_events empty");
+	  assert(Array.isArray(state.evidence_capsules), label + " evidence_capsules missing");
+	  assert(state.evidence_capsules.length > 0, label + " evidence_capsules empty");
+	  assert(state.pickup_state?.current_task, label + " pickup current_task missing");
+	  assert(state.pickup_state?.next_action, label + " pickup next_action missing");
+	  assert(Array.isArray(state.pickup_state?.active_files), label + " pickup active_files missing");
+	  assert(Array.isArray(state.latest_transcript_tail?.records), label + " latest transcript tail missing");
+	  assert(state.latest_transcript_tail.records.length > 0, label + " latest transcript tail empty");
+	  assertIncludes(handoffMarkdown, "## Pickup State", label + " handoff markdown");
+	  assertIncludes(handoffMarkdown, "## Latest Transcript Tail", label + " handoff markdown");
+	  assertIncludes(handoffMarkdown, "## User Messages", label + " handoff markdown");
   const stateArtifact = manifest.artifacts.find((artifact) => artifact.path === "handoff-state.json");
   assert(stateArtifact && stateArtifact.sha256, label + " state artifact hash missing");
   assertEqual(stateArtifact.sha256, sha256(stateText), label + " state artifact hash");

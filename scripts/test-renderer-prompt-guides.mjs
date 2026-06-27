@@ -20,7 +20,7 @@ console.log("2. Per-renderer read/output guides:");
 for (const [renderer, mustInclude] of [
   ["sentinel", ["How to read (sentinel", "@@RECORD line=000042", "How to output (sentinel", '"start_line": 42']],
   ["stripped", ["How to read (stripped", '<record line="000042"', "How to output (stripped"]],
-  ["onto", ["How to read (onto", "@@ONTO Transcript", "42|user", "How to output (onto", "Model registry"]],
+  ["onto", ["How to read (onto", "@@ONTO Transcript", "42|user", "How to output (onto", "Current live state"]],
 ]) {
   const text = rendererTranscriptGuide(renderer).join("\n");
   for (const needle of mustInclude) {
@@ -28,8 +28,8 @@ for (const [renderer, mustInclude] of [
   }
 }
 
-console.log("3. Shared density tail:");
-check("shared tail requests 8+ blocks", rendererTranscriptGuide("onto").join("\n").includes("at least 8 summary_blocks"));
+console.log("3. Shared format tail:");
+check("shared tail rejects copied example domains", rendererTranscriptGuide("onto").join("\n").includes("do not copy these example domains"));
 
 console.log("");
 if (failures > 0) {
