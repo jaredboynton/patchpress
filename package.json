@@ -1,6 +1,6 @@
 {
   "name": "patchpress",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Fast cheap cited compaction for Claude Code via a stable in-place binary patch and a flash-tier citation+rehydration pipeline.",
   "license": "MIT",
   "type": "module",
