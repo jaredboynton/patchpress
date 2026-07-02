@@ -82,7 +82,7 @@ node scripts/score-compaction-result.mjs runs/demo     # deterministic /100
 node scripts/judge-compaction-result.mjs runs/demo     # semantic judge /10
 ```
 
-Provider credentials load from a gitignored `.env` with no manual setup; `--provider` also accepts `codex`, `xai`, and `mantle` (see [`AGENTS.md`](AGENTS.md)).
+Provider credentials load from a gitignored `.env` with no manual setup; `--provider` also accepts `codex`, `xai`, `mantle`, and `anthropic` (see [`AGENTS.md`](AGENTS.md)).
 
 To patch Claude Code itself so live sessions use it:
 

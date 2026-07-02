@@ -85,6 +85,15 @@ async function countRenderedTokens(text, model) {
 }
 
 const PROVIDER_REGISTRY = {
+  anthropic: {
+    family: "anthropic",
+    resolveKey: () => process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY || "",
+    missingKeyMsg:
+      "anthropic provider requires a fresh OAuth token in CLAUDE_CODE_OAUTH_TOKEN (injected by the running Claude Code binary) or an ANTHROPIC_API_KEY",
+    endpoint: () =>
+      (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "") + "/v1/messages",
+    defaultModel: () => process.env.ANTHROPIC_COMPACT_MODEL || "claude-sonnet-4-6",
+  },
   codex:  { family: "codex",  defaultModel: () => process.env.CODEX_COMPACT_MODEL || "gpt-5.4", resolveModel: (renderedTokens) => renderedTokens < CODEX_MODEL_TOKEN_THRESHOLD ? "gpt-5.4-mini" : "gpt-5.4" },
   gemini: { family: "gemini", resolveKey: () => process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "", endpoint: () => (process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "") + "/models/" + encodeURIComponent(MODEL) + ":streamGenerateContent?alt=sse", defaultModel: () => process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash", missingKeyMsg: "Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini" },
   xai:    { family: "chat",   resolveKey: () => process.env.XAI_API_KEY || "", endpoint: () => (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/chat/completions", defaultModel: () => process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning", missingKeyMsg: "Missing XAI_API_KEY for --provider xai" },
@@ -121,7 +130,7 @@ let MODEL =
 // transcript fits its 272k-token input window, else gpt-5.4. See the
 // post-render block in main() and PROVIDER_REGISTRY.codex.resolveModel.
 const MODEL_EXPLICIT = Boolean(
-  argValue("--model") || process.env.COMPACT_MODEL || process.env.CODEX_COMPACT_MODEL
+  argValue("--model") || process.env.COMPACT_MODEL || process.env.CODEX_COMPACT_MODEL || process.env.ANTHROPIC_COMPACT_MODEL
 );
 const CODEX_MODEL_TOKEN_THRESHOLD = Number.parseInt(
   process.env.CODEX_MODEL_TOKEN_THRESHOLD || "272000",
@@ -2335,8 +2344,81 @@ function buildChatCompletionsRequestBody(promptText, stats) {
   return request;
 }
 
+const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || "2023-06-01";
+const ANTHROPIC_OAUTH_BETA = process.env.ANTHROPIC_BETA || "oauth-2025-04-20";
+const ANTHROPIC_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS || "32000", 10);
+
+function buildAnthropicRequestBody(promptText, stats) {
+  const body = {
+    model: MODEL,
+    max_tokens: ANTHROPIC_MAX_OUTPUT_TOKENS,
+    stream: true,
+    system: [
+      { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+      {
+        type: "text",
+        text:
+          "You are a transcript compaction engine. Emit the summary by calling the emit_summary tool with arguments that match its schema exactly. Produce no other output.",
+      },
+    ],
+    tools: [
+      {
+        name: "emit_summary",
+        description: "Emit the structured transcript compaction summary.",
+        input_schema: createProviderSummarySchema(stats.records),
+      },
+    ],
+    tool_choice: { type: "tool", name: "emit_summary" },
+    messages: [{ role: "user", content: promptText }],
+    metadata: { user_id: "patchpress-full-" + stats.sha256.slice(0, 32) },
+  };
+  if (TEMPERATURE !== null) body.temperature = TEMPERATURE;
+  return { body };
+}
+
+function redactAnthropicRequestForLog(request, stats) {
+  const isOAuth =
+    Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) ||
+    String(PROVIDER_REGISTRY[PROVIDER].resolveKey()).startsWith("sk-ant-oat");
+  return {
+    url: providerEndpoint(),
+    method: "POST",
+    headers: {
+      ...(isOAuth
+        ? { Authorization: "Bearer <redacted>", "anthropic-beta": ANTHROPIC_OAUTH_BETA }
+        : { "x-api-key": "<redacted>" }),
+      "anthropic-version": ANTHROPIC_VERSION,
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: {
+      ...request.body,
+      messages: request.body.messages.map((m) => ({
+        role: m.role,
+        content: "<redacted " + String(m.content).length + " chars>",
+      })),
+    },
+  };
+}
+
+function anthropicDeltaText(event) {
+  if (event?.type === "content_block_delta") {
+    const d = event.delta;
+    if (d?.type === "input_json_delta" && typeof d.partial_json === "string") return d.partial_json;
+    if (d?.type === "text_delta" && typeof d.text === "string") return d.text;
+  }
+  return "";
+}
+
+function collectAnthropicOutputText(events) {
+  let text = "";
+  for (const event of events) text += anthropicDeltaText(event);
+  return text.trim();
+}
+
 function buildRequestBody(promptText, stats) {
   const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "anthropic") return buildAnthropicRequestBody(promptText, stats);
   if (family === "gemini") return buildGeminiRequestBody(promptText, stats);
   if (family === "chat") return buildChatCompletionsRequestBody(promptText, stats);
   return buildCodexRequestBody(promptText, stats);
@@ -2457,6 +2539,7 @@ function redactChatCompletionsRequestForLog(request, stats) {
 
 function redactRequestForLog(request, stats) {
   const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "anthropic") return redactAnthropicRequestForLog(request, stats);
   if (family === "gemini") return redactGeminiRequestForLog(request, stats);
   if (family === "chat") return redactChatCompletionsRequestForLog(request, stats);
   return redactCodexRequestForLog(request, stats);
@@ -2572,6 +2655,20 @@ function collectChatCompletionsOutputText(events) {
 
 function streamAdapter() {
   const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "anthropic") {
+    return {
+      deltaText: anthropicDeltaText,
+      collectOutputText: collectAnthropicOutputText,
+      isCompleted: (event) => event?.type === "message_stop",
+      isFailure: (event) => event?.type === "error",
+      failureError: (event) => event?.error || event,
+      usage: (events) =>
+        [...events].reverse().find((e) => e?.usage)?.usage ??
+        events.find((e) => e?.message?.usage)?.message?.usage ??
+        null,
+      responseId: (events) => events.find((e) => e?.type === "message_start")?.message?.id ?? null,
+    };
+  }
   if (family === "gemini") {
     return {
       deltaText: geminiDeltaText,
@@ -4865,6 +4962,18 @@ async function main() {
 
   const transcript = await readFile(inputPath, "utf8");
   const allRecords = parseJsonl(transcript);
+  if (PROVIDER_REGISTRY[PROVIDER].family === "anthropic" && !MODEL_EXPLICIT) {
+    // Use the model already driving the live session (prompt-cache affinity):
+    // Claude Code transcript records carry the producing model on message.model.
+    for (let i = allRecords.length - 1; i >= 0; i--) {
+      const sessionModel = allRecords[i]?.message?.model;
+      if (typeof sessionModel === "string" && sessionModel && sessionModel !== "<synthetic>") {
+        MODEL = sessionModel;
+        break;
+      }
+    }
+    process.stderr.write("[anthropic model] session model = " + MODEL + "\n");
+  }
   // Filter the transcript to citable records before numbering. Every record the
   // model can cite is then guaranteed to rehydrate to non-empty text, so an
   // empty evidence capsule is unrepresentable. records, lineHashArtifacts, and
@@ -5105,7 +5214,24 @@ async function main() {
 
     const _family = _reg.family;
     const response =
-      _family === "gemini"
+      _family === "anthropic"
+        ? await fetch(endpoint, {
+            method: "POST",
+            headers: (() => {
+              const key = _reg.resolveKey();
+              const isOAuth = Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) || key.startsWith("sk-ant-oat");
+              return {
+                ...(isOAuth
+                  ? { Authorization: "Bearer " + key, "anthropic-beta": ANTHROPIC_OAUTH_BETA }
+                  : { "x-api-key": key }),
+                "anthropic-version": ANTHROPIC_VERSION,
+                Accept: "text/event-stream",
+                "Content-Type": "application/json",
+              };
+            })(),
+            body: bodyText,
+          })
+        : _family === "gemini"
         ? await fetch(endpoint, {
             method: "POST",
             headers: {

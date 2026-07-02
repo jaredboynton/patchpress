@@ -1,0 +1,455 @@
+{
+  "ok": true,
+  "dry_run": true,
+  "request": {
+    "provider": "anthropic",
+    "endpoint": "https://api.anthropic.com/v1/messages",
+    "model": "claude-sonnet-4-6",
+    "reask_until_pass": false,
+    "max_reasks": 0,
+    "provider_schema_fingerprint": "f0113ce3dec4dc1eab95f59014001269c2ebdd9779d252b01d6c68dc006887d6",
+    "local_validation_schema": "summary-local-validation.v1",
+    "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
+    "service_tier": null,
+    "reasoning_effort": null,
+    "temperature": null,
+    "thinking_level": null,
+    "thinking_config": null,
+    "max_output_tokens": null,
+    "inputPath": "<repo>/tests/fixtures/reduced-transcript.jsonl",
+    "outDir": "/tmp/fixed-dry",
+    "transcript_sha256": "a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86",
+    "transcript_bytes": 535,
+    "transcript_records": 3,
+    "transcript_renderer": "sentinel",
+    "render_body_cleanup_removed_chars": 0,
+    "render_body_cleanup_removed_lines": 0,
+    "render_body_cleanup_dedented_blocks": 0,
+    "estimated_char_div_4_tokens": 134,
+    "request_body_bytes": 13800,
+    "wrapped_transcript_bytes": 502,
+    "wrapped_transcript_estimated_tokens": 126,
+    "live_output": true,
+    "preserve_tail": 16,
+    "tool_output_compress_strategy": "headtail",
+    "tool_output_compress_after": 64,
+    "tool_output_compress_min_chars": 2400,
+    "tool_output_compress_head_chars": 900,
+    "tool_output_compress_tail_chars": 500,
+    "tool_output_compressed_records": 0,
+    "tool_output_original_chars": 0,
+    "tool_output_rendered_chars": 0,
+    "tool_output_omitted_chars": 0,
+    "tool_use_compress_after": 64,
+    "tool_use_compress_min_chars": 800,
+    "tool_use_compressed_records": null,
+    "tool_use_original_chars": null,
+    "tool_use_omitted_chars": null,
+    "transcript_cwd_prefix": null,
+    "custom_summary_instructions": null,
+    "compact_and_prompt": null,
+    "from_output": null,
+    "user_message_collapse_at": 2400,
+    "user_message_head_chars": 900,
+    "user_message_tail_chars": 900,
+    "handoff_user_message_limit": 64,
+    "handoff_user_message_token_budget": 8000,
+    "handoff_user_message_line_limit": 300
+  }
+}
+{
+  "url": "https://api.anthropic.com/v1/messages",
+  "method": "POST",
+  "headers": {
+    "Authorization": "Bearer <redacted>",
+    "anthropic-beta": "oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "Accept": "text/event-stream",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 32000,
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are Claude Code, Anthropic's official CLI for Claude."
+      },
+      {
+        "type": "text",
+        "text": "You are a transcript compaction engine. Emit the summary by calling the emit_summary tool with arguments that match its schema exactly. Produce no other output."
+      }
+    ],
+    "tools": [
+      {
+        "name": "emit_summary",
+        "description": "Emit the structured transcript compaction summary.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "summary_blocks",
+            "rules_and_invariants",
+            "plans_and_task_state",
+            "current_work",
+            "optional_next_step",
+            "pickup_state",
+            "promises_made",
+            "source_integrity"
+          ],
+          "properties": {
+            "summary_blocks": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Focused continuation sections. Start with latest live state; include older context only when it affects continuation.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "section",
+                  "format",
+                  "body",
+                  "source_spans"
+                ],
+                "properties": {
+                  "section": {
+                    "type": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "paragraph",
+                      "bullet"
+                    ]
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Concise rendered summary content for this block."
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Narrow record ranges supporting this block.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "rules_and_invariants": {
+              "type": "array",
+              "description": "Live instructions or constraints that still govern future work.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "rule",
+                  "status",
+                  "source_spans"
+                ],
+                "properties": {
+                  "rule": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "current",
+                      "superseded",
+                      "removed"
+                    ],
+                    "description": "Current rules are live; superseded/removed rules are historical warnings."
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "plans_and_task_state": {
+              "type": "array",
+              "description": "Task ledger for active, pending, blocked, superseded, or relevant completed work.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "item",
+                  "status",
+                  "source_spans"
+                ],
+                "properties": {
+                  "item": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "active",
+                      "pending",
+                      "blocked",
+                      "superseded"
+                    ]
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "promises_made": {
+              "type": "array",
+              "description": "Unresolved assistant commitments, plus completed commitments whose proof must remain visible.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "promise",
+                  "status",
+                  "source_spans"
+                ],
+                "properties": {
+                  "promise": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "active",
+                      "pending",
+                      "blocked",
+                      "superseded",
+                      "removed"
+                    ]
+                  },
+                  "source_spans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start_line",
+                        "end_line"
+                      ],
+                      "properties": {
+                        "start_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        },
+                        "end_line": {
+                          "type": "integer",
+                          "description": "One-based citable transcript record number.",
+                          "minimum": 1,
+                          "maximum": 3
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "current_work": {
+              "type": "string",
+              "description": "Latest non-superseded work state at the end of the transcript."
+            },
+            "optional_next_step": {
+              "type": "string",
+              "description": "Single next action grounded in the latest non-superseded transcript state."
+            },
+            "pickup_state": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "cwd",
+                "git_branch",
+                "current_task",
+                "next_action",
+                "next_command",
+                "active_files",
+                "tests_run",
+                "known_caveats",
+                "status_conflicts"
+              ],
+              "description": "Immediate continuation facts for a fresh agent.",
+              "properties": {
+                "cwd": {
+                  "type": "string",
+                  "description": "Current working directory if present in transcript metadata; otherwise empty."
+                },
+                "git_branch": {
+                  "type": "string",
+                  "description": "Current git branch if present in transcript metadata; otherwise empty."
+                },
+                "current_task": {
+                  "type": "string",
+                  "description": "Latest live task, not historical background."
+                },
+                "next_action": {
+                  "type": "string",
+                  "description": "Concrete next action after compaction."
+                },
+                "next_command": {
+                  "type": "string",
+                  "description": "Exact command to run next, or empty if the next action is not a command."
+                },
+                "active_files": {
+                  "type": "array",
+                  "description": "Files, dirs, scripts, or artifacts that matter for immediate continuation.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tests_run": {
+                  "type": "array",
+                  "description": "Verification commands already run and their outcome when known.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "known_caveats": {
+                  "type": "array",
+                  "description": "Warnings, assumptions, or gaps the next agent must know before acting.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "status_conflicts": {
+                  "type": "array",
+                  "description": "Older-vs-latest state conflicts and the chosen latest-state resolution.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "older_state",
+                      "latest_state",
+                      "resolution"
+                    ],
+                    "properties": {
+                      "older_state": {
+                        "type": "string"
+                      },
+                      "latest_state": {
+                        "type": "string"
+                      },
+                      "resolution": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "source_integrity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "transcript_sha256",
+                "transcript_lines_seen",
+                "verbatim_span_grounded",
+                "limitations"
+              ],
+              "properties": {
+                "transcript_sha256": {
+                  "type": "string"
+                },
+                "transcript_lines_seen": {
+                  "type": "integer"
+                },
+                "verbatim_span_grounded": {
+                  "type": "boolean"
+                },
+                "limitations": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
+    "tool_choice": {
+      "type": "tool",
+      "name": "emit_summary"
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": "<redacted 7393 chars>"
+      }
+    ],
+    "metadata": {
+      "user_id": "patchpress-full-a3ad070eb92d5b4bea8e27041f0df26c"
+    }
+  }
+}

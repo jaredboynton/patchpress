@@ -14,6 +14,14 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 
+// Pin provider env so golden fixtures are machine-independent: strip any
+// ambient base-URL/credential overrides and use a fixed placeholder token.
+for (const k of Object.keys(process.env)) {
+  if (/^(ANTHROPIC_|GEMINI_API_BASE_URL|GOOGLE_API_KEY|GEMINI_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|COMPACT_MODEL)/.test(k)) delete process.env[k];
+}
+process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat-parity-fixture";
+
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const compactScript = join(repoRoot, "scripts", "compact-full-transcript.mjs");
@@ -22,7 +30,7 @@ const defaultInputPath = join(repoRoot, "tests", "fixtures", "reduced-transcript
 const inputPath = process.env.DRY_PARITY_INPUT || defaultInputPath;
 const update = process.argv.includes("--update");
 
-const PROVIDERS = ["codex", "gemini", "xai", "mantle"];
+const PROVIDERS = ["codex", "gemini", "xai", "mantle", "anthropic"];
 const RENDERERS = ["sentinel", "stripped", "onto"];
 
 // Normalize volatile fields so only request logic is compared.
