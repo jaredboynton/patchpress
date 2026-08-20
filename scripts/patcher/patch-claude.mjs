@@ -29,14 +29,19 @@ function expandTilde(pathStr) {
   return pathStr;
 }
 
-// String-aware brace matcher: given the index of an opening "{", returns the
-// index of its matching "}" (or -1). Skips braces inside string/template
-// literals and handles escapes.
-function findCloseBrace(content, openBraceIndex) {
+// String-aware delimiter matcher: given the index of an opening "{", "(", or
+// "[", returns the index of its matching closer (or -1). Skips delimiters
+// inside string/template literals and handles escapes. Only the paired
+// delimiter is counted, so `foo({x:bar()})` paren-matches correctly.
+const DELIM_PAIRS = { "{": "}", "(": ")", "[": "]" };
+function findCloseDelim(content, openIndex) {
+  const closeChar = DELIM_PAIRS[content[openIndex]];
+  if (!closeChar) return -1;
+  const openChar = content[openIndex];
   let counter = 1;
   let inString = null;
   let escaped = false;
-  for (let i = openBraceIndex + 1; i < content.length; i++) {
+  for (let i = openIndex + 1; i < content.length; i++) {
     const char = content[i];
     if (escaped) {
       escaped = false;
@@ -56,9 +61,9 @@ function findCloseBrace(content, openBraceIndex) {
       inString = char;
       continue;
     }
-    if (char === "{") {
+    if (char === openChar) {
       counter++;
-    } else if (char === "}") {
+    } else if (char === closeChar) {
       counter--;
       if (counter === 0) {
         return i;
@@ -66,6 +71,10 @@ function findCloseBrace(content, openBraceIndex) {
     }
   }
   return -1;
+}
+
+function findCloseBrace(content, openBraceIndex) {
+  return findCloseDelim(content, openBraceIndex);
 }
 
 // Pad a redirect to occupy EXACTLY bodyByteLength bytes so the patch is
@@ -120,44 +129,123 @@ function buildSelRedirect(messagesVar) {
 // {ok:false,reason:"error"}, which DRn's "error" case surfaces to the user while
 // preserving the un-compacted conversation (the correct non-destructive failure).
 //
-// The success return reproduces _kd's EXACT native contract using its own
-// in-scope helpers (verified verbatim in the binary's JS trailer): the native
-// epilogue is `wrap({content:preamble(l,!0,live(),void 0,replchk()&&replnote(...))})`,
-// which prepends the continuation preamble, the live transcript path (live()),
-// and the REPL-cleared note, then wraps it into the isCompactSummary user
-// message. We feed `preamble` the RAW handoff.md (= native `l`), NOT the
-// harness's after-compact.jsonl line[1] (which is already preamble-wrapped --
-// feeding that back through preamble would double-wrap). forkAssistantMessageCount
-// is a safe literal 1 (the caller forwards it for telemetry only). ctxVar is
-// _kd's 2nd param (carries toolUseContext); messagesVar is its 1st (the messages
-// array). `helpers` carries the 5 minified helper names resolved dynamically
-// from this version's epilogue (resolveKdHelpers) -- they drift every release
-// (e.g. qf->Lm, ox->hw, MPt->zLt, UOt->XMt across 2.1.185->2.1.186), so they
-// MUST NOT be hardcoded.
-function buildKdRedirect(messagesVar, ctxVar, helpers) {
-  const { wrap, preamble, live, replchk, replnote } = helpers;
-  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}const c=${live}(),u=${replchk}()&&${replnote}(${ctxVar}.toolUseContext.getReplContexts(),${ctxVar}.toolUseContext.agentId);return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${wrap}({content:${preamble}(rawHandoff,!0,c,void 0,u),isCompactSummary:!0,isVisibleInTranscriptOnly:!0})]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
+// The success return MUST reproduce _kd's native contract. Helper names AND
+// signatures drift every release (qf->Lm, positional preamble -> options
+// object, getReplContexts() -> toolState, extra wrap/preamble fields).
+// Reconstructing the call from extracted names is what broke /compact on
+// 2.1.224+ (published 0.9.0 still emits preamble(rawHandoff,!0,c,void 0,u)
+// + getReplContexts()). Instead we splice the native success tail:
+//   let c=LIVE(),u=REPLCHK()&&REPLNOTE(...);  // prelude, verbatim
+//   return{ok:!0,summaryText:rawHandoff,...,messages:[WRAP({content:PREAMBLE(rawHandoff,...)})]}
+// Only the summary variable is rewritten to rawHandoff (the RAW handoff.md;
+// after-compact.jsonl is already preamble-wrapped and would double-wrap).
+// forkAssistantMessageCount is a safe literal 1 (telemetry only).
+// extractKdEpilogue fails closed if the success-return shape is gone.
+function buildKdRedirect(messagesVar, epilogue) {
+  const patchedWrap = splicePreambleSummary(epilogue.wrapCall, epilogue.preamble, epilogue.summaryVar);
+  return `const _gm=(m)=>{try{if(process.getBuiltinModule)return process.getBuiltinModule(m)}catch(e){}return require(m)};try{/* CLAUDE_COMPACT_PATCH_v1 */const fs=_gm("node:fs"),cp=_gm("node:child_process"),path=_gm("node:path");const tempIn=path.join("/tmp","compact-"+Date.now()+".jsonl"),tempOutDir=path.join("/tmp","compact-"+Date.now());fs.writeFileSync(tempIn,${messagesVar}.map(m=>JSON.stringify(m)).join("\\n")+"\\n");await new Promise((res,rej)=>{const ch=cp.spawn("/bin/sh",["-c","node ${compactShim} --input "+tempIn+" --out-dir "+tempOutDir+" >> /tmp/claude-compact.log 2>&1"],{stdio:"ignore"});ch.on("error",rej);ch.on("exit",c=>c===0?res():rej(new Error("compaction script exit "+c)))});try{fs.appendFileSync("/tmp/claude-compact.log","[patch _kd] invoked"+String.fromCharCode(10))}catch(ex){}const rawHandoff=fs.readFileSync(path.join(tempOutDir,"handoff.md"),"utf8");if(!rawHandoff||!rawHandoff.trim())throw new Error("redirect: empty handoff from compaction script");let usage={input_tokens:1000,output_tokens:500};try{const resultObj=JSON.parse(fs.readFileSync(path.join(tempOutDir,"result.json"),"utf8"));if(resultObj.usage)usage=resultObj.usage}catch(ex){}try{fs.unlinkSync(tempIn);fs.rmSync(tempOutDir,{recursive:true,force:true})}catch(ex){}${epilogue.prelude};return{ok:!0,summaryText:rawHandoff,forkAssistantMessageCount:1,totalUsage:usage,messages:[${patchedWrap}]}}catch(err){try{_gm("node:fs").appendFileSync("/tmp/claude-compact.log","[patch _kd] redirect error: "+(err&&err.stack?err.stack:String(err))+"\\n")}catch(ex){}return{ok:!1,reason:"error",detail:String(err)}}`;
 }
 
-// Resolve the 5 minified in-scope helper names from `_kd`'s native success-return
-// epilogue. The epilogue STRUCTURE is stable across versions; only the names drift.
-// Two regexes pin all 5 by their surrounding literal syntax:
-//   messages:[WRAP({content:PREAMBLE(summaryVar,!0,cVar,void 0,uVar)
-//   cVar=LIVE(),uVar=REPLCHK()&&REPLNOTE(CTX.toolUseContext.getReplContexts(),CTX.toolUseContext.agentId)
-// Throws (labeled) if either fails, so the whole patch aborts fail-closed rather
-// than re-injecting stale names. Returns {wrap,preamble,live,replchk,replnote}.
-function resolveKdHelpers(body) {
-  const wrapRe = /messages:\[([A-Za-z0-9_$]+)\(\{content:([A-Za-z0-9_$]+)\([A-Za-z0-9_$]+,!0,[A-Za-z0-9_$]+,void 0,[A-Za-z0-9_$]+\)/;
-  const replRe = /=([A-Za-z0-9_$]+)\(\),[A-Za-z0-9_$]+=([A-Za-z0-9_$]+)\(\)&&([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\.toolUseContext\.getReplContexts\(\),\4\.toolUseContext\.agentId\)/;
-  const wm = body.match(wrapRe);
-  if (!wm) {
-    throw new Error("[_kd] could not resolve native message-wrap/preamble helpers from the success-return epilogue (minified layout changed)");
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function splicePreambleSummary(wrapCall, preamble, summaryVar) {
+  const re = new RegExp(`(content\\s*:\\s*${escapeRe(preamble)}\\s*\\(\\s*)${escapeRe(summaryVar)}\\b`);
+  if (!re.test(wrapCall)) {
+    throw new Error("[_kd] could not splice rawHandoff into native wrap/preamble call");
   }
-  const rm = body.match(replRe);
-  if (!rm) {
-    throw new Error("[_kd] could not resolve native live/repl helpers from the success-return epilogue (minified layout changed)");
+  return wrapCall.replace(re, "$1rawHandoff");
+}
+
+// Pull the native success-return tail out of `_kd`. Structural (brace/paren
+// matched), not a reconstructed signature: extra preamble keys, wrap fields,
+// replnote args, and prelude bindings are preserved verbatim. Helper names are
+// best-effort metadata for dry-run/tests; a failed name parse does not abort
+// the patch if the tail itself extracted. Throws (labeled) if the success
+// return is missing, so the whole patch aborts fail-closed.
+export function extractKdEpilogue(body) {
+  const retRe = /return\s*\{\s*ok\s*:\s*(?:!0|true)\s*,\s*summaryText\s*:\s*([A-Za-z0-9_$]+)/g;
+  let m;
+  let last = null;
+  while ((m = retRe.exec(body)) !== null) last = m;
+  if (!last) {
+    throw new Error("[_kd] success-return {ok:true,summaryText} epilogue not found");
   }
-  return { wrap: wm[1], preamble: wm[2], live: rm[1], replchk: rm[2], replnote: rm[3] };
+  const summaryVar = last[1];
+  const braceOpen = body.indexOf("{", last.index);
+  const braceClose = findCloseDelim(body, braceOpen);
+  if (braceClose === -1) {
+    throw new Error("[_kd] could not brace-match success-return object");
+  }
+  const retObj = body.slice(braceOpen, braceClose + 1);
+
+  const mkMatch = /messages\s*:\s*\[/.exec(retObj);
+  if (!mkMatch) {
+    throw new Error("[_kd] success-return missing messages:[...]");
+  }
+  const exprStartInObj = mkMatch.index + mkMatch[0].length;
+  const wrapMatch = retObj.slice(exprStartInObj).match(/^([A-Za-z0-9_$]+)\s*\(/);
+  if (!wrapMatch) {
+    throw new Error("[_kd] messages:[...] is not a helper call");
+  }
+  const wrap = wrapMatch[1];
+  const wrapParenOpen = braceOpen + exprStartInObj + wrapMatch[0].length - 1;
+  const wrapParenClose = findCloseDelim(body, wrapParenOpen);
+  if (wrapParenClose === -1) {
+    throw new Error("[_kd] could not paren-match messages wrap call");
+  }
+  const wrapCall = body.slice(braceOpen + exprStartInObj, wrapParenClose + 1);
+
+  const contentRe = /content\s*:\s*([A-Za-z0-9_$]+)\s*\(\s*([A-Za-z0-9_$]+)/;
+  const cm = wrapCall.match(contentRe);
+  if (!cm) {
+    throw new Error("[_kd] wrap call missing content:preamble(summary)");
+  }
+  if (cm[2] !== summaryVar) {
+    throw new Error("[_kd] preamble first arg does not match summaryText variable");
+  }
+  const preamble = cm[1];
+
+  const before = body.slice(0, last.index);
+  // Only the trailing let/const statement(s) immediately before return.
+  // A greedy `.+` from the first `let` in the function would swallow the
+  // whole body and blow the byte budget.
+  const preludeMatch = before.match(/((?:(?:let|const)\s+[A-Za-z0-9_$]+=[^;]*;\s*)+)$/);
+  if (!preludeMatch) {
+    throw new Error("[_kd] missing let/const prelude immediately before success return");
+  }
+  const prelude = preludeMatch[1].replace(/;\s*$/, "");
+  const names = parseKdHelperNames(prelude);
+
+  return {
+    wrap,
+    preamble,
+    summaryVar,
+    prelude,
+    wrapCall,
+    isObjectPreamble: /content\s*:\s*[A-Za-z0-9_$]+\s*\(\s*[A-Za-z0-9_$]+\s*,\s*\{/.test(wrapCall),
+    live: names.live,
+    replchk: names.replchk,
+    replnote: names.replnote,
+    replArg: names.replArg,
+  };
+}
+
+function parseKdHelperNames(prelude) {
+  const liveRe = /(?:let|const)\s+[A-Za-z0-9_$]+=([A-Za-z0-9_$]+)\([^)]*\),([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)\(\)&&([A-Za-z0-9_$]+)\(/;
+  const lm = prelude.match(liveRe);
+  if (!lm) {
+    return { live: "", replchk: "", replnote: "", replArg: "" };
+  }
+  const argRe = /\.toolUseContext\.([A-Za-z0-9_$]+(?:\(\))?)/;
+  const am = prelude.match(argRe);
+  return {
+    live: lm[1],
+    replchk: lm[3],
+    replnote: lm[4],
+    replArg: am ? am[1] : "",
+  };
 }
 
 // --- Anchor locators ------------------------------------------------------
@@ -219,14 +307,14 @@ export function locateKd(content) {
     if (!(openBraceIndex < markerIdx && markerIdx < closeBraceIndex)) continue;
     const body = content.slice(openBraceIndex, closeBraceIndex);
     if (!/querySource\s*:\s*["']compact["']/.test(body)) continue;
-    const helpers = resolveKdHelpers(body);
+    const epilogue = extractKdEpilogue(body);
     return {
       label: "_kd",
       name: h[1],
       openBraceIndex,
       bodyByteLength: closeBraceIndex - openBraceIndex - 1,
-      redirectCode: buildKdRedirect(h[2], h[3], helpers),
-      helpers,
+      redirectCode: buildKdRedirect(h[2], epilogue),
+      helpers: epilogue,
     };
   }
   throw new Error("[_kd] could not resolve the enclosing reactive-compact function body");
@@ -342,7 +430,7 @@ if (dryRun) {
     );
     if (a.helpers) {
       console.log(
-        `    resolved helpers: wrap=${a.helpers.wrap} preamble=${a.helpers.preamble} live=${a.helpers.live} replchk=${a.helpers.replchk} replnote=${a.helpers.replnote}`,
+        `    resolved helpers: wrap=${a.helpers.wrap} preamble=${a.helpers.preamble} live=${a.helpers.live} replchk=${a.helpers.replchk} replnote=${a.helpers.replnote} replArg=${a.helpers.replArg} objectPreamble=${!!a.helpers.isObjectPreamble}`,
       );
     }
   }

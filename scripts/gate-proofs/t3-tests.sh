@@ -12,6 +12,8 @@ echo "### handoff user-message + citable-filter tests:"
 node scripts/test-handoff-user-messages.mjs
 echo "### patcher anchor + dynamic helper-resolution test:"
 node scripts/test-patcher-anchors.mjs
+echo "### _kd native-epilogue splice test:"
+node scripts/test-kd-epilogue.mjs
 echo "### stable indirection shim test:"
 node scripts/test-shim.mjs
 echo "### managed ~/bin/claude launcher test:"
