@@ -1,0 +1,3 @@
+{"type":"user","uuid":"parity-u-1","timestamp":"2026-06-20T00:00:00.000Z","message":{"role":"user","content":"Plan the compact renderer defaults.\n\n\nKeep ONTO as the live lane."}}
+{"type":"assistant","uuid":"parity-a-1","timestamp":"2026-06-20T00:00:01.000Z","message":{"role":"assistant","content":"I will render a small deterministic transcript and keep the output citable."}}
+{"type":"user","uuid":"parity-u-2","timestamp":"2026-06-20T00:00:02.000Z","message":{"role":"user","content":"Now dry-run every provider and renderer."}}

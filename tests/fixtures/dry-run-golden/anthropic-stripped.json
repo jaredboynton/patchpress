@@ -2,9 +2,9 @@
   "ok": true,
   "dry_run": true,
   "request": {
-    "provider": "xai",
-    "endpoint": "https://api.x.ai/v1/chat/completions",
-    "model": "grok-4.20-0309-non-reasoning",
+    "provider": "anthropic",
+    "endpoint": "https://api.anthropic.com/v1/messages",
+    "model": "claude-sonnet-4-6",
     "reask_until_pass": false,
     "max_reasks": 0,
     "provider_schema_fingerprint": "f0113ce3dec4dc1eab95f59014001269c2ebdd9779d252b01d6c68dc006887d6",
@@ -12,7 +12,7 @@
     "local_validation_fingerprint": "fd19c43d8fc350857611be04f68c97ce141b61593a9ef1378c30f12aa8b762f8",
     "service_tier": null,
     "reasoning_effort": null,
-    "temperature": 0.4,
+    "temperature": null,
     "thinking_level": null,
     "thinking_config": null,
     "max_output_tokens": null,
@@ -21,25 +21,25 @@
     "transcript_sha256": "a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86",
     "transcript_bytes": 535,
     "transcript_records": 3,
-    "transcript_renderer": "sentinel",
+    "transcript_renderer": "stripped",
     "render_body_cleanup_removed_chars": 0,
     "render_body_cleanup_removed_lines": 0,
     "render_body_cleanup_dedented_blocks": 0,
     "estimated_char_div_4_tokens": 134,
-    "request_body_bytes": 13864,
-    "wrapped_transcript_bytes": 502,
-    "wrapped_transcript_estimated_tokens": 126,
+    "request_body_bytes": 13422,
+    "wrapped_transcript_bytes": 475,
+    "wrapped_transcript_estimated_tokens": 119,
     "live_output": true,
     "preserve_tail": 16,
-    "tool_output_compress_strategy": "headtail",
-    "tool_output_compress_after": 64,
-    "tool_output_compress_min_chars": 2400,
-    "tool_output_compress_head_chars": 900,
-    "tool_output_compress_tail_chars": 500,
-    "tool_output_compressed_records": 0,
-    "tool_output_original_chars": 0,
-    "tool_output_rendered_chars": 0,
-    "tool_output_omitted_chars": 0,
+    "tool_output_compress_strategy": null,
+    "tool_output_compress_after": null,
+    "tool_output_compress_min_chars": null,
+    "tool_output_compress_head_chars": null,
+    "tool_output_compress_tail_chars": null,
+    "tool_output_compressed_records": null,
+    "tool_output_original_chars": null,
+    "tool_output_rendered_chars": null,
+    "tool_output_omitted_chars": null,
     "tool_use_compress_after": 64,
     "tool_use_compress_min_chars": 800,
     "tool_use_compressed_records": null,
@@ -58,36 +58,34 @@
   }
 }
 {
-  "url": "https://api.x.ai/v1/chat/completions",
+  "url": "https://api.anthropic.com/v1/messages",
   "method": "POST",
   "headers": {
     "Authorization": "Bearer <redacted>",
+    "anthropic-beta": "oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
     "Accept": "text/event-stream",
     "Content-Type": "application/json"
   },
   "body": {
-    "model": "grok-4.20-0309-non-reasoning",
-    "messages": [
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 32000,
+    "stream": true,
+    "system": [
       {
-        "role": "system",
-        "content": "You are a transcript compaction engine. Output only strict JSON matching the requested schema."
+        "type": "text",
+        "text": "You are Claude Code, Anthropic's official CLI for Claude."
       },
       {
-        "role": "user",
-        "content": "<full transcript omitted from redacted request; see before transcript artifact> {\"inputPath\":\"<repo>/tests/fixtures/reduced-transcript.jsonl\",\"sha256\":\"a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86\",\"bytes\":535,\"records\":3,\"approxTokens\":134}"
+        "type": "text",
+        "text": "You are a transcript compaction engine. Emit the summary by calling the emit_summary tool with arguments that match its schema exactly. Produce no other output."
       }
     ],
-    "stream": true,
-    "stream_options": {
-      "include_usage": true
-    },
-    "response_format": {
-      "type": "json_schema",
-      "json_schema": {
-        "name": "claude_full_transcript_compaction",
-        "description": "Produce an evidence-grounded Claude Code transcript continuation handoff.",
-        "strict": true,
-        "schema": {
+    "tools": [
+      {
+        "name": "emit_summary",
+        "description": "Emit the structured transcript compaction summary.",
+        "input_schema": {
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -439,13 +437,19 @@
           }
         }
       }
+    ],
+    "tool_choice": {
+      "type": "tool",
+      "name": "emit_summary"
     },
+    "messages": [
+      {
+        "role": "user",
+        "content": "<redacted 6972 chars>"
+      }
+    ],
     "metadata": {
-      "codex_harness": "patchpress",
-      "request_kind": "full_transcript_compaction",
-      "transcript_sha256": "a3ad070eb92d5b4bea8e27041f0df26c8bff981ee9251f03c78c75a7ffa0ee86",
-      "transcript_records": "3"
-    },
-    "temperature": 0.4
+      "user_id": "patchpress-full-a3ad070eb92d5b4bea8e27041f0df26c"
+    }
   }
 }

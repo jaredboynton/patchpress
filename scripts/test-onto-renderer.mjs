@@ -71,8 +71,6 @@ try {
       "--dry-run",
       "--provider",
       "codex",
-      "--transcript-renderer",
-      "onto",
       "--dump-prompt",
       promptPath,
     ],
@@ -81,14 +79,19 @@ try {
   const meta = parseFirstJson(stdout);
   const prompt = await readFile(promptPath, "utf8");
 
-  assert(meta.request.transcript_renderer === "onto", "dry-run did not report onto renderer");
+  assert(meta.request.transcript_renderer === "onto", "dry-run did not report default onto renderer");
+  assert(!("render_body_cleanup_strategy" in meta.request), "dry-run still reports removed cleanup strategy");
+  assert(
+    typeof meta.request.render_body_cleanup_removed_chars === "number",
+    "dry-run did not report cleanup removed chars"
+  );
 
   // Schema-once header declared exactly once.
-  const headerMatches = prompt.match(/^@@ONTO Transcript\[2\] fields=line\|type\|role\|ts\|chars$/gm) || [];
+  const headerMatches = prompt.match(/^@@ONTO Transcript\[2\] fields=line\|type$/gm) || [];
   assert(headerMatches.length === 1, "onto header missing or not declared exactly once");
 
   // Pipe-delimited metadata rows; no repeated key= tokens.
-  assert(/\n000001\|user\|user\|2026-06-20T00:00:00\.000Z\|\d+\n/.test(prompt), "missing onto row for record 1");
+  assert(/\n1\|user\n/.test(prompt), "missing onto row for record 1");
   assert(!/\bline=000001\b/.test(prompt), "onto prompt still uses key= sentinel framing");
   assert(prompt.includes("Keep the ONTO renderer objective."), "record 1 body missing");
 
@@ -99,13 +102,14 @@ try {
   // Schema-once token win: inside the rendered transcript the metadata keys
   // appear exactly once (the header), not repeated per record.
   const transcriptRegion = (prompt.match(/<transcript>[\s\S]*<\/transcript>/) || [""])[0];
-  const keyTokenOccurrences = (transcriptRegion.match(/fields=line\|type\|role\|ts\|chars/g) || []).length;
+  const keyTokenOccurrences = (transcriptRegion.match(/fields=line\|type/g) || []).length;
   assert(keyTokenOccurrences === 1, "metadata keys not declared exactly once inside the transcript");
 
   console.log("onto renderer test passed");
-  console.log("  verified: dry-run reports transcript_renderer=onto");
-  console.log("  verified: '@@ONTO Transcript[2] fields=line|type|role|ts|chars' header declared exactly once");
-  console.log("  verified: pipe row '000001|user|user|2026-06-20T00:00:00.000Z|<chars>' present (no per-record key= tokens)");
+  console.log("  verified: dry-run default reports transcript_renderer=onto");
+  console.log("  verified: dry-run reports cleanup counters without a strategy option");
+  console.log("  verified: '@@ONTO Transcript[2] fields=line|type' header declared exactly once");
+  console.log("  verified: pipe row '1|user' present (no per-record key= tokens)");
   console.log("  verified: sentinel-style 'line=000001' framing absent (schema-once, keys not repeated per record)");
   console.log("  verified: record body text preserved after its row");
   console.log("  verified: row-shaped body line '000123|...' space-escaped to ' 000123|...' so it is not parsed as a record start");

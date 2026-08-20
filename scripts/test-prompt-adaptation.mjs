@@ -51,21 +51,21 @@ function expect(label, got, mustInclude, mustExclude) {
   const ok = mustInclude.every((id) => got.includes(id)) && mustExclude.every((id) => !got.includes(id));
   check(label + " -> [" + got.join(", ") + "]", ok);
 }
-expect("codex/gpt-5.4 (strong: none)", applied("codex", "gpt-5.4"), [], ["enumerate-not-summarize", "bedrock-count-floor"]);
+expect("codex/gpt-5.4 (strong: none)", applied("codex", "gpt-5.4"), [], ["final-state-first", "bedrock-count-floor"]);
 expect("gemini-3.5-flash (sectional)", applied("gemini", "gemini-3.5-flash"),
-  ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "flash-sectional-depth"],
-  ["bedrock-count-floor", "nonreasoning-decompose", "xai-mine-transcript"]);
+  ["final-state-first", "continuation-coverage", "preserve-literals", "flash-sectional-depth"],
+  ["bedrock-count-floor", "onto-citation-format", "xai-mine-transcript"]);
 expect("mantle/grok-4.3", applied("mantle", "xai.grok-4.3"),
-  ["sectional-handoff-shape", "enumerate-not-summarize", "completion-contract", "preserve-literals", "bedrock-count-floor", "xai-mine-transcript"], ["gemini-density-steer"]);
+  ["final-state-first", "continuation-coverage", "preserve-literals", "bedrock-count-floor", "xai-mine-transcript"], ["onto-citation-format"]);
 expect("flash-lite", applied("gemini", "gemini-3.1-flash-lite"),
-  ["sectional-handoff-shape", "enumerate-not-summarize", "nonreasoning-decompose", "gemini-density-steer"], ["bedrock-count-floor", "xai-mine-transcript"]);
-// Renderer-gated: the onto capsule floor fires only for flash-lite + onto.
-expect("flash-lite onto (capsule floor)", applied("gemini", "gemini-3.1-flash-lite", "onto"),
-  ["sectional-handoff-shape", "nonreasoning-decompose", "gemini-density-steer", "flash-lite-onto-capsule-floor"], ["bedrock-count-floor"]);
-expect("flash-lite stripped (no capsule floor)", applied("gemini", "gemini-3.1-flash-lite", "stripped"),
-  ["sectional-handoff-shape", "nonreasoning-decompose", "gemini-density-steer"], ["flash-lite-onto-capsule-floor"]);
+  ["final-state-first", "continuation-coverage", "preserve-literals"], ["bedrock-count-floor", "xai-mine-transcript"]);
+// Renderer-gated: the ONTO citation hint fires only for flash-lite + onto.
+expect("flash-lite onto (citation format)", applied("gemini", "gemini-3.1-flash-lite", "onto"),
+  ["final-state-first", "continuation-coverage", "preserve-literals", "onto-citation-format"], ["bedrock-count-floor"]);
+expect("flash-lite stripped (no onto citation hint)", applied("gemini", "gemini-3.1-flash-lite", "stripped"),
+  ["final-state-first", "continuation-coverage", "preserve-literals"], ["onto-citation-format"]);
 expect("xai/grok-4.20-non-reasoning", applied("xai", "grok-4.20-0309-non-reasoning"),
-  ["sectional-handoff-shape", "xai-mine-transcript", "nonreasoning-decompose"], ["bedrock-count-floor", "gemini-density-steer"]);
+  ["final-state-first", "continuation-coverage", "preserve-literals", "xai-mine-transcript"], ["bedrock-count-floor", "onto-citation-format"]);
 
 // 3. DEFAULT inert (parity).
 console.log("3. DEFAULT (--adapt-prompt off leaves the request byte-identical):");

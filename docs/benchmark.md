@@ -31,7 +31,7 @@ best balance of both:
   provider input tokens ~10-28% vs sentinel/stripped (e.g. codex 118k vs 131k/159k)
   and, under the de-conflicted prompt, now leads quality on every provider.
   **`dspc` strategy** (arXiv:2509.13723) remains wired but not benchmarked on the
-  595k transcript; defaults stay `stripped` / `headtail`.
+  595k transcript; defaults stay `onto` / `headtail`; render-body cleanup is always on.
 - **Quality-forcing (`--reask-until-pass`):** sectional prompt adaptations +
   density-gated retry until pass (auto `--adapt-prompt` on non-codex). Fixes
   flash-lite stripped (79 -> 94) and lifts grok-4.20 onto (87 -> 94). Remaining
@@ -145,7 +145,7 @@ below). All six `onto` rows use `--transcript-renderer
 onto` with default `headtail` tool-output compression; artifacts under
 `runs/bench-*-onto` and `runs/bench-grok43-onto` (Mantle). Onto cuts provider
 input tokens ~10-28% vs sentinel/stripped by dropping per-record metadata key
-repetition while leaving body text unchanged.
+repetition; new runs also apply prompt-only render-body cleanup by default.
 The script defaults to temperature 0.4 for `grok-4.3`,
 `grok-4.20`, and `gemini-3.1-flash-lite`, and Gemini Flash-Lite to thinking
 `minimal` (see `compact-full-transcript.mjs`). A non-conforming block -- a

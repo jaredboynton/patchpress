@@ -14,6 +14,14 @@ import {
 } from "./handoff-density.mjs";
 import { buildPromptAdaptations, modelTraits } from "./prompt-adaptation.mjs";
 import { rendererTranscriptGuide } from "./renderer-prompt-guides.mjs";
+import {
+  compactFormattedEdit,
+  extractEditCapsules,
+  formatToolResult,
+  formatToolResultContent,
+  formatToolUse,
+  isFormattedEditText,
+} from "./tool-use-format.mjs";
 
 // Load .env relative to the script directory
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -77,6 +85,15 @@ async function countRenderedTokens(text, model) {
 }
 
 const PROVIDER_REGISTRY = {
+  anthropic: {
+    family: "anthropic",
+    resolveKey: () => process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY || "",
+    missingKeyMsg:
+      "anthropic provider requires a fresh OAuth token in CLAUDE_CODE_OAUTH_TOKEN (injected by the running Claude Code binary) or an ANTHROPIC_API_KEY",
+    endpoint: () =>
+      (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "") + "/v1/messages",
+    defaultModel: () => process.env.ANTHROPIC_COMPACT_MODEL || "claude-sonnet-4-6",
+  },
   codex:  { family: "codex",  defaultModel: () => process.env.CODEX_COMPACT_MODEL || "gpt-5.4", resolveModel: (renderedTokens) => renderedTokens < CODEX_MODEL_TOKEN_THRESHOLD ? "gpt-5.4-mini" : "gpt-5.4" },
   gemini: { family: "gemini", resolveKey: () => process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "", endpoint: () => (process.env.GEMINI_API_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "") + "/models/" + encodeURIComponent(MODEL) + ":streamGenerateContent?alt=sse", defaultModel: () => process.env.GEMINI_COMPACT_MODEL || "gemini-3.5-flash", missingKeyMsg: "Missing GEMINI_API_KEY or GOOGLE_API_KEY for --provider gemini" },
   xai:    { family: "chat",   resolveKey: () => process.env.XAI_API_KEY || "", endpoint: () => (process.env.XAI_API_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "") + "/chat/completions", defaultModel: () => process.env.XAI_COMPACT_MODEL || "grok-4.20-0309-non-reasoning", missingKeyMsg: "Missing XAI_API_KEY for --provider xai" },
@@ -113,7 +130,7 @@ let MODEL =
 // transcript fits its 272k-token input window, else gpt-5.4. See the
 // post-render block in main() and PROVIDER_REGISTRY.codex.resolveModel.
 const MODEL_EXPLICIT = Boolean(
-  argValue("--model") || process.env.COMPACT_MODEL || process.env.CODEX_COMPACT_MODEL
+  argValue("--model") || process.env.COMPACT_MODEL || process.env.CODEX_COMPACT_MODEL || process.env.ANTHROPIC_COMPACT_MODEL
 );
 const CODEX_MODEL_TOKEN_THRESHOLD = Number.parseInt(
   process.env.CODEX_MODEL_TOKEN_THRESHOLD || "272000",
@@ -313,7 +330,7 @@ const handoffUserMessageTokenBudget = intArg("--handoff-user-message-token-budge
 const handoffUserMessageLineLimit = intArg("--handoff-user-message-line-limit", 300);
 const transcriptRenderer = argValue(
   "--transcript-renderer",
-  process.env.COMPACT_TRANSCRIPT_RENDERER || "stripped"
+  process.env.COMPACT_TRANSCRIPT_RENDERER || "onto"
 );
 if (transcriptRenderer !== "stripped" && transcriptRenderer !== "sentinel" && transcriptRenderer !== "jsonl" && transcriptRenderer !== "onto") {
   throw new Error("Expected --transcript-renderer to be stripped, sentinel, jsonl, or onto");
@@ -340,14 +357,27 @@ const toolOutputCompressTailChars =
 // then a multi-signal score. The two model-derived signals in the paper
 // (last-layer attention, cross-model loss) are realized as deterministic lexical
 // proxies here because this renderer/compression path makes zero model calls;
-// the positional Gaussian (eq. 9) is computed exactly.
+// the positional Gaussian (eq. 9) is computed exactly. "mask" is full observation
+// masking (arXiv:2508.21433): drop the old tool-output body entirely, keeping only
+// a metadata placeholder (the body stays recoverable via the sha markers).
 const toolOutputCompressStrategy = argValue(
   "--tool-output-compress-strategy",
   process.env.COMPACT_TOOL_OUTPUT_STRATEGY || "headtail"
 );
-if (toolOutputCompressStrategy !== "headtail" && toolOutputCompressStrategy !== "dspc") {
-  throw new Error("Expected --tool-output-compress-strategy to be headtail or dspc");
+if (!["headtail", "dspc", "mask"].includes(toolOutputCompressStrategy)) {
+  throw new Error("Expected --tool-output-compress-strategy to be headtail, dspc, or mask");
 }
+const toolUseCompressAfter =
+  argValue("--tool-use-compress-after") === undefined
+    ? toolOutputCompressAfter
+    : intArg("--tool-use-compress-after", toolOutputCompressAfter);
+const toolUseCompressMinChars = intArg("--tool-use-compress-min-chars", 800);
+const toolUseCompressHeadChars = intArg("--tool-use-compress-head-chars", 400);
+const toolUseCompressTailChars = intArg("--tool-use-compress-tail-chars", 200);
+const transcriptCwdPrefix = argValue(
+  "--transcript-cwd-prefix",
+  process.env.COMPACT_TRANSCRIPT_CWD_PREFIX || ""
+);
 function floatArg(name, fallback) {
   const raw = argValue(name);
   if (raw === undefined) return fallback;
@@ -449,43 +479,29 @@ function previewRecord(line) {
   }
 }
 
-function renderPartForPrompt(part) {
+function toolFormatMeta(entry) {
+  return {
+    lineNumber: entry?.lineNumber ?? null,
+    recordHash: entry?.hash ?? null,
+    cwdPrefix: transcriptCwdPrefix || null,
+  };
+}
+
+function renderPartForPrompt(part, meta = {}) {
   if (!part || typeof part !== "object") return "";
+  if (part.type === "tool_use") return formatToolUse(part, meta);
+  if (part.type === "tool_result") return formatToolResult(part, meta);
   if (typeof part.text === "string") return part.text;
   if (typeof part.content === "string") return part.content;
-  if (part.type === "tool_use") {
-    const name = part.name || "unknown";
-    const input =
-      part.input && typeof part.input === "object" ? JSON.stringify(part.input) : String(part.input || "");
-    return "[tool_use name=" + name + "]\n" + input;
-  }
-  if (part.type === "tool_result") {
-    const content = Array.isArray(part.content)
-      ? part.content
-          .map((item) =>
-            typeof item === "string"
-              ? item
-              : typeof item?.text === "string"
-                ? item.text
-                : typeof item?.content === "string"
-                  ? item.content
-                  : ""
-          )
-          .filter(Boolean)
-          .join("\n")
-      : typeof part.content === "string"
-        ? part.content
-        : "";
-    return "[tool_result]\n" + content;
-  }
   return "";
 }
 
-function recordTextForPrompt(record) {
+function recordTextForPrompt(record, entry = null) {
+  const meta = toolFormatMeta(entry);
   const content = record?.message?.content ?? record?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    const rendered = content.map(renderPartForPrompt).filter(Boolean).join("\n\n");
+    const rendered = content.map((part) => renderPartForPrompt(part, meta)).filter(Boolean).join("\n\n");
     if (rendered.length > 0) return rendered;
   }
   if (typeof record?.lastPrompt === "string" && record.lastPrompt.length > 0) return record.lastPrompt;
@@ -499,6 +515,20 @@ function isToolOutputRecord(record) {
   if (record?.toolUseResult || record?.sourceToolAssistantUUID) return true;
   if (!Array.isArray(content)) return false;
   return content.some((part) => part?.type === "tool_result" || part?.tool_use_id);
+}
+
+function isToolUseRecord(record) {
+  const content = record?.message?.content;
+  return Array.isArray(content) && content.some((part) => part?.type === "tool_use");
+}
+
+function compactOldToolUseBody(body, entry) {
+  if (!isFormattedEditText(body)) return { body, compressed: false };
+  return compactFormattedEdit(body, entry, {
+    minChars: toolUseCompressMinChars,
+    headChars: toolUseCompressHeadChars,
+    tailChars: toolUseCompressTailChars,
+  });
 }
 
 function escapeSentinelBody(text) {
@@ -687,39 +717,251 @@ function compactOldToolOutputBodyDSPC(body, entry) {
   };
 }
 
+// Observation masking (JetBrains "The Complexity Trap", arXiv:2508.21433): drop the
+// entire old tool-output body, keeping only a metadata placeholder. The exact body
+// stays recoverable downstream via body_sha256/record_sha256, same as headtail/dspc.
+function maskOldToolOutputBody(body, entry) {
+  const text = String(body || "");
+  if (text.length <= toolOutputCompressMinChars) return { body: text, compressed: false };
+  const lines = text.split("\n").length;
+  const marker =
+    "[tool output masked: strategy=mask original_chars=" +
+    text.length +
+    " original_lines=" +
+    lines +
+    " omitted_chars=" +
+    text.length +
+    " line=" +
+    entry.lineNumber +
+    " body_sha256=" +
+    sha256Text(text) +
+    " record_sha256=" +
+    entry.hash +
+    "]";
+  return { body: marker, compressed: true, originalChars: text.length, omittedChars: text.length };
+}
+
 function compactToolOutputBody(body, entry) {
+  if (toolOutputCompressStrategy === "mask") return maskOldToolOutputBody(body, entry);
   if (toolOutputCompressStrategy === "dspc") return compactOldToolOutputBodyDSPC(body, entry);
   return compactOldToolOutputBody(body, entry);
 }
 
+function createRenderStats() {
+  return {
+    compressedToolOutputRecords: 0,
+    originalToolOutputChars: 0,
+    renderedToolOutputChars: 0,
+    omittedToolOutputChars: 0,
+    compressedToolUseRecords: 0,
+    originalToolUseChars: 0,
+    omittedToolUseChars: 0,
+    renderBodyCleanupRemovedChars: 0,
+    renderBodyCleanupRemovedLines: 0,
+    renderBodyCleanupDedentedBlocks: 0,
+  };
+}
+
+const RENDER_WS_RE = /^[\s\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000]*$/u;
+const RENDER_WS_EDGE_RE = /^[\s\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000]+|[\s\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000]+$/gu;
+const BOX_DRAWING_CHARS = new Set(
+  "┌┐└┘├┤┬┴┼─│┏┓┗┛┣┫┳┻╋━┃╭╮╰╯╔╗╚╝╠╣╦╩╬═║╞╡╤╧╪╟╢╥╨╫╒╕╘╛╓╖╙╜┄┅┈┉┆┇┊┋╎╏".split("")
+);
+
+function isRenderWhitespaceOnly(line) {
+  return RENDER_WS_RE.test(String(line || ""));
+}
+
+function trimRenderWhitespace(line) {
+  return String(line || "").replace(RENDER_WS_EDGE_RE, "");
+}
+
+function isVisualSeparatorLine(line) {
+  const trimmed = trimRenderWhitespace(line);
+  if (trimmed.length < 20) return false;
+  let hasBoxDrawing = false;
+  for (const char of trimmed) {
+    if (BOX_DRAWING_CHARS.has(char)) {
+      hasBoxDrawing = true;
+      continue;
+    }
+    if (isRenderWhitespaceOnly(char)) continue;
+    hasBoxDrawing = false;
+    break;
+  }
+  if (hasBoxDrawing) return true;
+  return /^[=\-_*]+$/.test(trimmed);
+}
+
+function stripVisualSeparatorLines(lines) {
+  let removedLines = 0;
+  const kept = [];
+  for (const line of lines) {
+    if (isVisualSeparatorLine(line)) {
+      removedLines += 1;
+      continue;
+    }
+    kept.push(line);
+  }
+  return { lines: kept, removedLines };
+}
+
+function collapseBlankRuns(lines) {
+  const out = [];
+  let blankRun = 0;
+  let removedLines = 0;
+  for (const line of lines) {
+    if (isRenderWhitespaceOnly(line)) {
+      blankRun += 1;
+      if (blankRun <= 2) out.push("");
+      else removedLines += 1;
+      continue;
+    }
+    blankRun = 0;
+    out.push(line);
+  }
+  return { lines: out, removedLines };
+}
+
+function leadingSpaceCount(line) {
+  const match = String(line).match(/^ */);
+  return match ? match[0].length : 0;
+}
+
+function leadingIndentHasTab(line) {
+  return /^[ \t]*\t/.test(String(line));
+}
+
+function isMarkdownStructuralBlock(block) {
+  const nonblank = block.map((line) => line.trim()).filter(Boolean);
+  if (nonblank.length === 0) return false;
+  if (nonblank.every((line) => /^\|.*\|$/.test(line))) return true;
+  return nonblank.every((line) => /^(?:[-*+]|\d+[.)]|>|#{1,6}\s)/.test(line));
+}
+
+function isRenderedCodeBoundary(line) {
+  const trimmed = String(line || "").trim();
+  return (
+    trimmed === "" ||
+    trimmed.startsWith("```") ||
+    /^\d+\|/.test(trimmed) ||
+    /^@@(?:RECORD|END_RECORD)\b/.test(trimmed) ||
+    /^<\/?record\b/.test(trimmed)
+  );
+}
+
+function isOverIndentedCodeStart(line) {
+  if (leadingIndentHasTab(line) || leadingSpaceCount(line) < 12) return false;
+  const trimmed = String(line || "").trim();
+  return (
+    /^(?:match|if|else|for|while|switch|case|return|let|fn)\b/.test(trimmed) ||
+    /^(?:Ok|Err|None|Some)\b/.test(trimmed) ||
+    /^sub_[A-Za-z0-9_]+/.test(trimmed) ||
+    /[{};]|=>|::|->/.test(trimmed)
+  );
+}
+
+function dedentRenderedCodeBlocks(lines) {
+  const out = lines.slice();
+  let dedentedBlocks = 0;
+  for (let idx = 0; idx < out.length;) {
+    while (idx < out.length && isRenderWhitespaceOnly(out[idx])) idx += 1;
+    const start = idx;
+    while (idx < out.length && !isRenderWhitespaceOnly(out[idx])) idx += 1;
+    const end = idx;
+    const block = out.slice(start, end);
+    if (block.length < 3) continue;
+    if (block.some(leadingIndentHasTab)) continue;
+    const minIndent = Math.min(...block.map(leadingSpaceCount));
+    if (!Number.isFinite(minIndent) || minIndent < 8) continue;
+    if (isMarkdownStructuralBlock(block)) continue;
+    for (let lineIdx = start; lineIdx < end; lineIdx += 1) {
+      out[lineIdx] = out[lineIdx].slice(minIndent);
+    }
+    dedentedBlocks += 1;
+  }
+  for (let idx = 0; idx < out.length;) {
+    if (!isOverIndentedCodeStart(out[idx])) {
+      idx += 1;
+      continue;
+    }
+    const start = idx;
+    const baseIndent = leadingSpaceCount(out[start]);
+    idx += 1;
+    while (idx < out.length && !isRenderedCodeBoundary(out[idx])) idx += 1;
+    const end = idx;
+    const block = out.slice(start, end);
+    if (block.length < 3) continue;
+    if (block.some(leadingIndentHasTab)) continue;
+    if (isMarkdownStructuralBlock(block)) continue;
+    let changed = false;
+    for (let lineIdx = start; lineIdx < end; lineIdx += 1) {
+      if (isRenderWhitespaceOnly(out[lineIdx])) continue;
+      const trimBy = Math.min(baseIndent, leadingSpaceCount(out[lineIdx]));
+      if (trimBy > 0) {
+        out[lineIdx] = out[lineIdx].slice(trimBy);
+        changed = true;
+      }
+    }
+    if (changed) dedentedBlocks += 1;
+  }
+  return { lines: out, dedentedBlocks };
+}
+
+function normalizeRenderedPromptBody(body, _entry, stats) {
+  const before = String(body || "");
+  if (before.length === 0) return before;
+  let lines = before.split("\n");
+  let removedLines = 0;
+  let dedentedBlocks = 0;
+
+  const stripped = stripVisualSeparatorLines(lines);
+  lines = stripped.lines;
+  removedLines += stripped.removedLines;
+
+  const collapsed = collapseBlankRuns(lines);
+  lines = collapsed.lines;
+  removedLines += collapsed.removedLines;
+
+  const dedented = dedentRenderedCodeBlocks(lines);
+  lines = dedented.lines;
+  dedentedBlocks += dedented.dedentedBlocks;
+
+  const after = lines.join("\n");
+  if (stats && after.length < before.length) {
+    stats.renderBodyCleanupRemovedChars =
+      (stats.renderBodyCleanupRemovedChars || 0) + (before.length - after.length);
+    stats.renderBodyCleanupRemovedLines = (stats.renderBodyCleanupRemovedLines || 0) + removedLines;
+    stats.renderBodyCleanupDedentedBlocks =
+      (stats.renderBodyCleanupDedentedBlocks || 0) + dedentedBlocks;
+  }
+  return after;
+}
+
 function escapeOntoBody(text) {
-  return String(text || "").replace(/^(\d{6}\|)/gm, " $1");
+  return String(text || "").replace(/^(\d+\|)/gm, " $1");
 }
 
 function ontoMetaField(value) {
   return String(value == null ? "" : value).replace(/\s+/g, "_").replace(/\|/g, "/");
 }
 
-// ONTO-inspired schema-once row-major renderer (arXiv:2604.17512). Per-record
-// metadata keys (line|type|role|ts|chars) are declared once in the @@ONTO header;
-// each record is one pipe-delimited value row (empty fields render as ONTO null)
-// followed by its free-text body. Row-major (not the paper's column-major field
-// lines) preserves the per-record line anchor the scorer/rehydrator depend on.
-// Drops per-record key= repetition used by sentinel and stripped. A record starts
-// at ^\d{6}\|; body lines that would collide are space-escaped.
+// ONTO-inspired schema-once row-major renderer (arXiv:2604.17512). Compact ONTO
+// declares line|type once, then emits one pipe-delimited row per record followed
+// by its free-text body. The row line is the citable anchor; raw JSONL/sidecars
+// retain full timestamps, roles, hashes, and exact record text for rehydration.
+// A record starts at ^\d+\|; body lines that would collide are space-escaped.
 function renderOntoRecord(entry, context) {
-  const linePadded = String(entry.lineNumber).padStart(6, "0");
+  const lineNumber = String(entry.lineNumber);
   let record;
   try {
     record = JSON.parse(entry.raw);
   } catch {
     const body = escapeOntoBody(entry.raw);
-    return linePadded + "|unparsed|||" + body.length + "\n" + body;
+    return lineNumber + "|unparsed\n" + body;
   }
   const type = ontoMetaField(record.type || "unknown");
-  const role = record.message?.role ? ontoMetaField(record.message.role) : "";
-  const ts = record.timestamp ? ontoMetaField(record.timestamp) : "";
-  let body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+  let body = recordTextForPrompt(record, entry).trim() || entry.preview || "[no textual content extracted]";
   const oldToolOutput =
     isToolOutputRecord(record) &&
     toolOutputCompressAfter > 0 &&
@@ -733,16 +975,30 @@ function renderOntoRecord(entry, context) {
     }
     body = compacted.body;
   }
+  const oldToolUse =
+    isToolUseRecord(record) &&
+    toolUseCompressAfter > 0 &&
+    entry.lineNumber <= context.recordCount - toolUseCompressAfter;
+  if (oldToolUse) {
+    const compacted = compactOldToolUseBody(body, entry);
+    if (compacted.compressed) {
+      context.stats.compressedToolUseRecords = (context.stats.compressedToolUseRecords || 0) + 1;
+      context.stats.originalToolUseChars = (context.stats.originalToolUseChars || 0) + compacted.originalChars;
+      context.stats.omittedToolUseChars = (context.stats.omittedToolUseChars || 0) + compacted.omittedChars;
+    }
+    body = compacted.body;
+  }
+  body = normalizeRenderedPromptBody(body, entry, context.stats);
   body = escapeOntoBody(body);
   if (oldToolOutput) context.stats.renderedToolOutputChars += body.length;
-  return [linePadded, type, role, ts, String(body.length)].join("|") + "\n" + body;
+  return [lineNumber, type].join("|") + "\n" + body;
 }
 
 function ontoHeader(recordCount) {
-  return "@@ONTO Transcript[" + recordCount + "] fields=line|type|role|ts|chars";
+  return "@@ONTO Transcript[" + recordCount + "] fields=line|type";
 }
 
-function renderStrippedRecord(entry) {
+function renderStrippedRecord(entry, context = {}) {
   let record;
   try {
     record = JSON.parse(entry.raw);
@@ -761,8 +1017,12 @@ function renderStrippedRecord(entry) {
   ];
   if (record.message?.role) attrs.push('role="' + String(record.message.role).replace(/"/g, "'") + '"');
   if (record.timestamp) attrs.push('timestamp="' + String(record.timestamp).replace(/"/g, "'") + '"');
-  const text = recordTextForPrompt(record).trim();
-  const body = text || entry.preview || "[no textual content extracted]";
+  const text = recordTextForPrompt(record, entry).trim();
+  const body = normalizeRenderedPromptBody(
+    text || entry.preview || "[no textual content extracted]",
+    entry,
+    context.stats
+  );
   return "<record " + attrs.join(" ") + ">\n" + body + "\n</record>";
 }
 
@@ -780,7 +1040,7 @@ function renderSentinelRecord(entry, context) {
   ];
   if (record.message?.role) fields.push("role=" + String(record.message.role).replace(/\s+/g, "_"));
   if (record.timestamp) fields.push("ts=" + String(record.timestamp).replace(/\s+/g, "_"));
-  let body = recordTextForPrompt(record).trim() || entry.preview || "[no textual content extracted]";
+  let body = recordTextForPrompt(record, entry).trim() || entry.preview || "[no textual content extracted]";
   const oldToolOutput =
     isToolOutputRecord(record) && toolOutputCompressAfter > 0 && entry.lineNumber <= context.recordCount - toolOutputCompressAfter;
   if (oldToolOutput) {
@@ -792,6 +1052,20 @@ function renderSentinelRecord(entry, context) {
     }
     body = compacted.body;
   }
+  const oldToolUse =
+    isToolUseRecord(record) &&
+    toolUseCompressAfter > 0 &&
+    entry.lineNumber <= context.recordCount - toolUseCompressAfter;
+  if (oldToolUse) {
+    const compacted = compactOldToolUseBody(body, entry);
+    if (compacted.compressed) {
+      context.stats.compressedToolUseRecords = (context.stats.compressedToolUseRecords || 0) + 1;
+      context.stats.originalToolUseChars = (context.stats.originalToolUseChars || 0) + compacted.originalChars;
+      context.stats.omittedToolUseChars = (context.stats.omittedToolUseChars || 0) + compacted.omittedChars;
+    }
+    body = compacted.body;
+  }
+  body = normalizeRenderedPromptBody(body, entry, context.stats);
   body = escapeSentinelBody(body);
   if (oldToolOutput) context.stats.renderedToolOutputChars += body.length;
   fields.push("chars=" + body.length);
@@ -800,12 +1074,7 @@ function renderSentinelRecord(entry, context) {
 
 function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
   const lines = logicalJsonlLines(transcript);
-  const renderStats = {
-    compressedToolOutputRecords: 0,
-    originalToolOutputChars: 0,
-    renderedToolOutputChars: 0,
-    omittedToolOutputChars: 0,
-  };
+  const renderStats = createRenderStats();
   const entries = lines.map((line, idx) => {
     let searchableText = line;
     try {
@@ -833,7 +1102,7 @@ function buildRecordArtifacts(transcript, renderer = transcriptRenderer) {
     entries
       .map((entry) => {
         const line = String(entry.lineNumber).padStart(6, "0");
-        if (renderer === "stripped") return renderStrippedRecord(entry);
+        if (renderer === "stripped") return renderStrippedRecord(entry, { recordCount: entries.length, stats: renderStats });
         if (renderer === "sentinel") {
           return renderSentinelRecord(entry, { recordCount: entries.length, stats: renderStats });
         }
@@ -965,7 +1234,7 @@ function recordKind(record) {
 
 function renderEntryForStats(entry, renderer, context) {
   const line = String(entry.lineNumber).padStart(6, "0");
-  if (renderer === "stripped") return renderStrippedRecord(entry);
+  if (renderer === "stripped") return renderStrippedRecord(entry, context);
   if (renderer === "sentinel") return renderSentinelRecord(entry, context);
   if (renderer === "onto") return renderOntoRecord(entry, context);
   return '<record line="' + line + '">' + entry.raw + "</record>";
@@ -983,12 +1252,7 @@ function rendererStatsForTranscript(transcript, renderer) {
   const topOmitted = [];
   const lines = logicalJsonlLines(transcript);
   const entries = artifacts.entries;
-  const renderStats = {
-    compressedToolOutputRecords: 0,
-    originalToolOutputChars: 0,
-    renderedToolOutputChars: 0,
-    omittedToolOutputChars: 0,
-  };
+  const renderStats = createRenderStats();
   for (const entry of entries) {
     let record = null;
     let parsed = true;
@@ -1551,8 +1815,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
   };
   const lineNumber = {
     type: "integer",
-    description:
-      "One-based logical JSONL record number for the cited record, read from the transcript framing described in the prompt.",
+    description: "One-based citable transcript record number.",
   };
   if (includeLineBounds) {
     lineNumber.minimum = 1;
@@ -1576,6 +1839,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       "plans_and_task_state",
       "current_work",
       "optional_next_step",
+      "pickup_state",
       "promises_made",
       "source_integrity",
     ],
@@ -1584,7 +1848,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
         type: "array",
         minItems: 1,
         description:
-          "One thematic section per distinct domain of the session. Be exhaustive: emit a separate block for every domain touched (current state, current user intent and constraints, each active artifact area, transport/capture, endpoints/payloads, model registry, tooling/skills, decisions, and pending work). Many focused blocks beat a few broad ones; do not merge unrelated domains into a single block. This handoff outlives the transcript, so a domain you omit is lost.",
+          "Focused continuation sections. Start with latest live state; include older context only when it affects continuation.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1597,14 +1861,12 @@ function createSummarySchema(recordCount = 0, options = {}) {
             },
             body: {
               type: "string",
-              description:
-                "Rendered summary content for this block. Bullet bodies must be a single item without a leading bullet marker.",
+              description: "Concise rendered summary content for this block.",
             },
             source_spans: {
               type: "array",
               minItems: 1,
-              description:
-                "Cite MULTIPLE narrow record ranges that support this block -- one fact per span. Prefer several 1-3 record citations over one wide span; every verbatim path, protocol string, RPC/service name, command, or version number named in the body needs its own span. A block with a single span almost always collapsed several facts.",
+              description: "Narrow record ranges supporting this block.",
               items: sourceSpan,
             },
           },
@@ -1612,8 +1874,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       rules_and_invariants: {
         type: "array",
-        description:
-          "Durable live instructions and constraints that should govern future work after compaction. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain what the next agent may do. Exclude ordinary completed tasks, transient exploration notes, historical user messages, rejected ideas, and old instructions that were later superseded or removed.",
+        description: "Live instructions or constraints that still govern future work.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1623,8 +1884,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
             status: {
               type: "string",
               enum: ["current", "superseded", "removed"],
-              description:
-                "Only current rules should be treated as live instructions after compaction. Use superseded or removed when later transcript state invalidates the rule.",
+              description: "Current rules are live; superseded/removed rules are historical warnings.",
             },
             source_spans: {
               type: "array",
@@ -1636,8 +1896,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       plans_and_task_state: {
         type: "array",
-        description:
-          "Work-state ledger for the task, not a rule list. Include active or pending tasks, completed milestones that matter for continuation, benchmark state, open artifacts, open questions, blockers, and concrete next actions. Order active and pending work by priority. Exclude durable behavioral constraints that belong in rules_and_invariants and explicit assistant commitments that belong in promises_made.",
+        description: "Task ledger for active, pending, blocked, superseded, or relevant completed work.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1658,8 +1917,7 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       promises_made: {
         type: "array",
-        description:
-          "Explicit assistant commitments to the user that should survive compaction. Include promises such as 'I will run X', 'I will send Y', 'I will update/commit/push Z', or equivalent accepted commitments where the user will reasonably expect follow-through or proof. Scan the WHOLE transcript for these commitments and include every one with a source_span -- this array is commonly under-populated, so re-check it before finalizing rather than leaving it empty when commitments exist. Do not infer promises from a user request alone. Exclude ordinary plans, inferred next steps, and completed work unless its promised proof/status must remain visible.",
+        description: "Unresolved assistant commitments, plus completed commitments whose proof must remain visible.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -1680,13 +1938,78 @@ function createSummarySchema(recordCount = 0, options = {}) {
       },
       current_work: {
         type: "string",
-        description:
-          "What is actively in progress at the END of the transcript (not an earlier abandoned branch), in one or two concrete sentences: the specific task, the file or command in flight, and the immediate blocker or open decision. Name exact paths/commands/identifiers.",
+        description: "Latest non-superseded work state at the end of the transcript.",
       },
       optional_next_step: {
         type: "string",
-        description:
-          "The single most actionable next step a fresh agent should take, stated as a concrete action grounded in the latest transcript state -- ideally the exact next command, file to edit, or check to run, and why. Do not leave empty and do not restate the goal abstractly; if work is complete, say what verification or follow-up remains.",
+        description: "Single next action grounded in the latest non-superseded transcript state.",
+      },
+      pickup_state: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "cwd",
+          "git_branch",
+          "current_task",
+          "next_action",
+          "next_command",
+          "active_files",
+          "tests_run",
+          "known_caveats",
+          "status_conflicts",
+        ],
+        description: "Immediate continuation facts for a fresh agent.",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Current working directory if present in transcript metadata; otherwise empty.",
+          },
+          git_branch: {
+            type: "string",
+            description: "Current git branch if present in transcript metadata; otherwise empty.",
+          },
+          current_task: {
+            type: "string",
+            description: "Latest live task, not historical background.",
+          },
+          next_action: {
+            type: "string",
+            description: "Concrete next action after compaction.",
+          },
+          next_command: {
+            type: "string",
+            description: "Exact command to run next, or empty if the next action is not a command.",
+          },
+          active_files: {
+            type: "array",
+            description: "Files, dirs, scripts, or artifacts that matter for immediate continuation.",
+            items: { type: "string" },
+          },
+          tests_run: {
+            type: "array",
+            description: "Verification commands already run and their outcome when known.",
+            items: { type: "string" },
+          },
+          known_caveats: {
+            type: "array",
+            description: "Warnings, assumptions, or gaps the next agent must know before acting.",
+            items: { type: "string" },
+          },
+          status_conflicts: {
+            type: "array",
+            description: "Older-vs-latest state conflicts and the chosen latest-state resolution.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["older_state", "latest_state", "resolution"],
+              properties: {
+                older_state: { type: "string" },
+                latest_state: { type: "string" },
+                resolution: { type: "string" },
+              },
+            },
+          },
+        },
       },
       source_integrity: {
         type: "object",
@@ -1771,16 +2094,14 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, ad
       ]
     : [];
   return [
-    "You are a compaction model for Claude Code session transcripts.",
-    "Your job is to produce a fresh summarized starting point for continued work after compaction.",
-    "Optimize for the very next follow-up prompt, including any queued follow-up supplied with this request.",
-    "Treat this as a continuation handoff, not a retrospective summary.",
-    "Preserve the active working set and compress older material aggressively.",
+    "You produce continuation handoffs for Claude Code session transcripts.",
+    "Optimize for the next agent picking up the live task, not for historical completeness.",
+    "Preserve the active working set and only the older context that still changes what should happen next.",
     "",
-    "Critical shape requirement:",
-    "- Do not omit late-session state.",
-    "- Treat later user messages as more important than earlier abandoned plans.",
-    "- If older context and late-session state conflict, prefer the corrected late-session state and explain only the delta that still matters.",
+    "Final-state priority:",
+    "- Read the final visible records before writing JSON.",
+    "- current_work and optional_next_step must come from the latest non-superseded state.",
+    "- If older context and late-session state conflict, mark the older item done/superseded instead of pending.",
     "",
     "Return strict JSON only. The JSON must match the provided schema.",
     ...customInstructionsBlock,
@@ -1788,47 +2109,41 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, ad
     "",
     "Evidence span format:",
     ...rendererEvidenceInstructions(stats.transcriptRenderer),
-    "- summary_blocks is the primary structured output. It must be ordered exactly as the continuation summary should read.",
-    "- Every summary_blocks item must include one or more source_spans pointing to the exact supporting record ranges.",
+    "- summary_blocks is the primary structured output. Order it as the continuation summary should read.",
+    "- Every summary_blocks item needs source_spans pointing to supporting record ranges.",
     "- The authoritative source record is the cited source_spans plus harness rehydration, not long verbatim body text.",
     "- Do not copy large verbatim transcript excerpts into the JSON response. The harness will extract exact record content itself from the selected source spans.",
     "- Do not emit verbatim code/config/command blocks in summary_blocks. Summarize them and cite the exact source spans; the harness preserves verbatim evidence separately.",
     "- Bullet bodies must be a single item and must not include a leading bullet marker.",
     "- Only records with extractable content are shown and numbered. Cite only line numbers present in the transcript below.",
-    "- source_integrity.verbatim_span_grounded must be true.",
     "",
-    "Compaction requirements:",
-    "- The harness will render the final markdown summary from summary_blocks and separately emit a rehydrated evidence view from source_spans.",
-    "- Prioritize continuation utility over historical exhaustiveness.",
-    "- Organize content around: task overview, current state, important discoveries, next steps, and context to preserve.",
-    "- Think in two bands: active context and archived context. Active context is what the next agent needs immediately; archived context is only older material needed to avoid repeated mistakes or lost commitments.",
-    "- Keep abandoned branches brief unless they still constrain current work, explain a bug, or explain why a later correction matters.",
+      "Compaction requirements:",
+      "- The harness will render the final markdown summary from summary_blocks and separately emit a rehydrated evidence view from source_spans.",
+      "- Prioritize continuation utility over historical exhaustiveness.",
+      "- Organize content around: current state, latest user intent, active artifacts, live constraints, blockers, and next action.",
+      "- Fill pickup_state as an immediate handoff card: cwd, branch, current task, exact next action, exact next command if any, active files/artifacts, tests already run, caveats, and older-vs-latest conflict resolutions.",
+      "- Keep abandoned branches brief unless they still constrain current work, explain a bug, or explain why a later correction matters.",
     "- Preserve failed approaches only when they prevent repeated work or explain a current constraint.",
     "- Prefer durable state over chronology: capture decisions, invariants, open tasks, exact artifacts, open questions, and unresolved blockers before narrating what happened.",
     "- Prefer block-style handoff sections over a play-by-play timeline.",
-    "- A fresh agent should know the current objective, active artifacts, user preferences, domain-specific context, constraints, blockers, and next command or check.",
-    "- Preserve explicit user instructions, constraints, file paths, commands, errors, pending work, and security-relevant instructions. Preserve security-relevant user constraints verbatim.",
+    "- Preserve exact user instructions, file paths, commands, errors, and security-relevant constraints when they are live.",
     "- Classify continuation state into three distinct buckets:",
-    "  - rules_and_invariants: live instructions or constraints that should govern future behavior. Include explicit user/system/project rules, safety/security constraints, validation gates, durable preferences, and accepted decisions that still constrain future work. Do not include completed tasks, one-off observations, generic errors, old user wording preserved only for history, or abandoned ideas.",
-    "  - plans_and_task_state: work ledger, not behavior policy. Include active/pending/done task state, benchmark status, open artifacts, blockers, open questions, and concrete next actions. Do not include durable rules or assistant promises unless the work item itself also needs tracking.",
-    "  - promises_made: explicit assistant commitments to the user. Include promised deliverables, checks, reports, commits, pushes, or follow-up actions where the user would expect proof or completion. Do not infer promises from a user request alone, and do not list ordinary internal next steps as promises.",
+    "  - rules_and_invariants: live instructions or constraints that should govern future behavior.",
+    "  - plans_and_task_state: work ledger, not behavior policy. Include active/pending/done task state, blockers, open questions, and concrete next actions.",
+    "  - promises_made: unresolved assistant commitments, plus completed commitments whose proof must remain visible.",
     "- If the same transcript event has multiple roles, split it only when each role matters: a user constraint belongs in rules_and_invariants; the task progress belongs in plans_and_task_state; the assistant's explicit commitment belongs in promises_made.",
-    "- If a later user message removes or supersedes an earlier rule, mark that rule status as removed or superseded. Do not present removed or superseded rules as live instructions.",
-    "- Keep removed or superseded rules only when they prevent drift or explain why a tempting older instruction is no longer live.",
+    "- If a later record removes or supersedes earlier work or rules, mark the earlier item done/superseded/removed. Do not present it as pending or live.",
     "- Preserve exact symbols, command names, endpoint paths, file names, hook names, setting names, and error text when they matter.",
     "- Do not pin irrelevant literal wording or incidental implementation details unless they are part of a contract or a current task.",
-    "- Do not output a user-message inventory. The harness extracts user-authored messages deterministically from the transcript.",
-    "- Do not output compatibility inventories such as source_lines_used, primary_request_and_intent, key_technical_concepts, files_and_code_sections, errors_and_fixes, problem_solving, or pending_tasks unless the active provider schema explicitly asks for them. The harness derives those local fields from anchored sections.",
-    "- current_work and optional_next_step must reflect the end of the transcript, not an earlier branch of work.",
     "- If the transcript includes an assistant mistake later corrected by the user, summarize the corrected state and mention the correction if it changes what should happen next.",
     "- The first summary_blocks items should establish, in order: current state, current user intent/constraints, active files/artifacts, unresolved work/next step. Put older background later.",
     "- When there is too much material, drop redundant intermediate exploration before dropping the final task state.",
-    "- Echo the transcript sha256 exactly in source_integrity.transcript_sha256.",
-    "- Echo the number of transcript records shown below in source_integrity.transcript_lines_seen.",
     "",
     "Transcript metadata:",
-    "- path: " + stats.inputPath,
-    "- sha256: " + stats.sha256,
+      "- path: " + stats.inputPath,
+      ...(stats.cwd ? ["- cwd: " + stats.cwd] : []),
+      ...(stats.gitBranch ? ["- git branch: " + stats.gitBranch] : []),
+      "- sha256: " + stats.sha256,
     "- bytes: " + stats.bytes,
     "- transcript records shown (citable): " + stats.records,
     "- prompt transcript renderer: " + stats.transcriptRenderer,
@@ -1841,6 +2156,11 @@ function buildFullTranscriptPrompt({ wrappedTranscript, stats, reaskFeedback, ad
     ...(adaptationLines && adaptationLines.length
       ? ["", "=== MODEL-SPECIFIC COMPLETENESS REQUIREMENTS ===", ...adaptationLines]
       : []),
+    "",
+    "=== FINAL STATE CHECK ===",
+    "Before finalizing, reread the final 20 records. If they show work is already done, current_work",
+    "and optional_next_step must not tell the next agent to do that work again. Use older records only",
+    "as supporting evidence for the latest non-superseded state.",
     ...(reaskFeedback && reaskFeedback.trim()
       ? ["", "=== CORRECTION REQUIRED (your previous attempt was incomplete) ===", reaskFeedback.trim()]
       : []),
@@ -1851,8 +2171,10 @@ function buildSharedPromptMarkdown() {
   const prompt = buildFullTranscriptPrompt({
     wrappedTranscript: "{{WRAPPED_TRANSCRIPT_JSONL}}",
     stats: {
-      inputPath: "{{INPUT_PATH}}",
-      sha256: "{{TRANSCRIPT_SHA256}}",
+        inputPath: "{{INPUT_PATH}}",
+        cwd: "{{CWD}}",
+        gitBranch: "{{GIT_BRANCH}}",
+        sha256: "{{TRANSCRIPT_SHA256}}",
       bytes: "{{TRANSCRIPT_BYTES}}",
       records: "{{TRANSCRIPT_RECORDS}}",
       transcriptRenderer: "{{TRANSCRIPT_RENDERER}}",
@@ -2022,8 +2344,81 @@ function buildChatCompletionsRequestBody(promptText, stats) {
   return request;
 }
 
+const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || "2023-06-01";
+const ANTHROPIC_OAUTH_BETA = process.env.ANTHROPIC_BETA || "oauth-2025-04-20";
+const ANTHROPIC_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.ANTHROPIC_MAX_OUTPUT_TOKENS || "32000", 10);
+
+function buildAnthropicRequestBody(promptText, stats) {
+  const body = {
+    model: MODEL,
+    max_tokens: ANTHROPIC_MAX_OUTPUT_TOKENS,
+    stream: true,
+    system: [
+      { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+      {
+        type: "text",
+        text:
+          "You are a transcript compaction engine. Emit the summary by calling the emit_summary tool with arguments that match its schema exactly. Produce no other output.",
+      },
+    ],
+    tools: [
+      {
+        name: "emit_summary",
+        description: "Emit the structured transcript compaction summary.",
+        input_schema: createProviderSummarySchema(stats.records),
+      },
+    ],
+    tool_choice: { type: "tool", name: "emit_summary" },
+    messages: [{ role: "user", content: promptText }],
+    metadata: { user_id: "patchpress-full-" + stats.sha256.slice(0, 32) },
+  };
+  if (TEMPERATURE !== null) body.temperature = TEMPERATURE;
+  return { body };
+}
+
+function redactAnthropicRequestForLog(request, stats) {
+  const isOAuth =
+    Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) ||
+    String(PROVIDER_REGISTRY[PROVIDER].resolveKey()).startsWith("sk-ant-oat");
+  return {
+    url: providerEndpoint(),
+    method: "POST",
+    headers: {
+      ...(isOAuth
+        ? { Authorization: "Bearer <redacted>", "anthropic-beta": ANTHROPIC_OAUTH_BETA }
+        : { "x-api-key": "<redacted>" }),
+      "anthropic-version": ANTHROPIC_VERSION,
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: {
+      ...request.body,
+      messages: request.body.messages.map((m) => ({
+        role: m.role,
+        content: "<redacted " + String(m.content).length + " chars>",
+      })),
+    },
+  };
+}
+
+function anthropicDeltaText(event) {
+  if (event?.type === "content_block_delta") {
+    const d = event.delta;
+    if (d?.type === "input_json_delta" && typeof d.partial_json === "string") return d.partial_json;
+    if (d?.type === "text_delta" && typeof d.text === "string") return d.text;
+  }
+  return "";
+}
+
+function collectAnthropicOutputText(events) {
+  let text = "";
+  for (const event of events) text += anthropicDeltaText(event);
+  return text.trim();
+}
+
 function buildRequestBody(promptText, stats) {
   const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "anthropic") return buildAnthropicRequestBody(promptText, stats);
   if (family === "gemini") return buildGeminiRequestBody(promptText, stats);
   if (family === "chat") return buildChatCompletionsRequestBody(promptText, stats);
   return buildCodexRequestBody(promptText, stats);
@@ -2144,6 +2539,7 @@ function redactChatCompletionsRequestForLog(request, stats) {
 
 function redactRequestForLog(request, stats) {
   const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "anthropic") return redactAnthropicRequestForLog(request, stats);
   if (family === "gemini") return redactGeminiRequestForLog(request, stats);
   if (family === "chat") return redactChatCompletionsRequestForLog(request, stats);
   return redactCodexRequestForLog(request, stats);
@@ -2259,6 +2655,20 @@ function collectChatCompletionsOutputText(events) {
 
 function streamAdapter() {
   const family = PROVIDER_REGISTRY[PROVIDER].family;
+  if (family === "anthropic") {
+    return {
+      deltaText: anthropicDeltaText,
+      collectOutputText: collectAnthropicOutputText,
+      isCompleted: (event) => event?.type === "message_stop",
+      isFailure: (event) => event?.type === "error",
+      failureError: (event) => event?.error || event,
+      usage: (events) =>
+        [...events].reverse().find((e) => e?.usage)?.usage ??
+        events.find((e) => e?.message?.usage)?.message?.usage ??
+        null,
+      responseId: (events) => events.find((e) => e?.type === "message_start")?.message?.id ?? null,
+    };
+  }
   if (family === "gemini") {
     return {
       deltaText: geminiDeltaText,
@@ -2488,10 +2898,34 @@ function validateSummary(value, lineHashArtifacts) {
   if (value.source_integrity.verbatim_span_grounded !== true) {
     return "source_integrity.verbatim_span_grounded is not true";
   }
-  if (typeof value.source_integrity.limitations !== "string") {
-    return "source_integrity.limitations missing";
-  }
-  if (value.summary_blocks.length === 0) return "summary_blocks is empty";
+    if (typeof value.source_integrity.limitations !== "string") {
+      return "source_integrity.limitations missing";
+    }
+    if (!value.pickup_state || typeof value.pickup_state !== "object" || Array.isArray(value.pickup_state)) {
+      return "pickup_state missing";
+    }
+    for (const key of ["cwd", "git_branch", "current_task", "next_action", "next_command"]) {
+      if (typeof value.pickup_state[key] !== "string") return "pickup_state." + key + " missing";
+    }
+    for (const key of ["active_files", "tests_run", "known_caveats", "status_conflicts"]) {
+      if (!Array.isArray(value.pickup_state[key])) return "pickup_state." + key + " is not an array";
+    }
+    if (value.pickup_state.current_task.trim().length === 0) return "pickup_state.current_task missing";
+    if (value.pickup_state.next_action.trim().length === 0) return "pickup_state.next_action missing";
+    for (const key of ["active_files", "tests_run", "known_caveats"]) {
+      for (const [idx, item] of value.pickup_state[key].entries()) {
+        if (typeof item !== "string") return "pickup_state." + key + "[" + idx + "] is not a string";
+      }
+    }
+    for (const [idx, item] of value.pickup_state.status_conflicts.entries()) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return "pickup_state.status_conflicts[" + idx + "] is not an object";
+      }
+      for (const key of ["older_state", "latest_state", "resolution"]) {
+        if (typeof item[key] !== "string") return "pickup_state.status_conflicts[" + idx + "]." + key + " missing";
+      }
+    }
+    if (value.summary_blocks.length === 0) return "summary_blocks is empty";
   const maxLine = lineHashArtifacts.entries.length;
   const validateSourceSpans = (label, sourceSpans) => {
     if (!Array.isArray(sourceSpans) || sourceSpans.length === 0) {
@@ -2746,7 +3180,183 @@ function deriveCompatibilityFields(summary) {
   };
 }
 
-function normalizeDerivedSummaryFields(summary) {
+function compactStringArray(value, fallback = [], max = 12) {
+  const out = [];
+  const add = (item) => pushUniqueText(out, item, max);
+  if (Array.isArray(value)) {
+    for (const item of value) add(item);
+  }
+  for (const item of fallback) add(item);
+  return out;
+}
+
+function pickupTextCorpus(summary) {
+  return [
+    summary.current_work,
+    summary.optional_next_step,
+    ...(summary.summary_blocks || []).map((item) => item?.body),
+    ...(summary.plans_and_task_state || []).map((item) => item?.item),
+    ...(summary.promises_made || []).map((item) => item?.promise),
+  ]
+    .map(compactText)
+    .filter(Boolean);
+}
+
+function sanitizeCommandCandidate(value) {
+  let text = String(value || "").trim();
+  if (
+    (text.startsWith("`") && text.endsWith("`")) ||
+    (text.startsWith("\"") && text.endsWith("\"")) ||
+    (text.startsWith("'") && text.endsWith("'")) ||
+    (text.startsWith("(") && text.endsWith(")"))
+  ) {
+    text = text.slice(1, -1).trim();
+  }
+  return text.replace(/[.。]\s*$/g, "").trim();
+}
+
+function isEmptyPickupValue(value) {
+  return /^(?:none\b.*|n\/a\b.*|null\b.*|no action\b.*|not required\b.*)$/i.test(compactText(value));
+}
+
+function looksLikeShellCommand(value) {
+  const text = sanitizeCommandCandidate(value);
+  if (!text || text.length > 400) return false;
+  if (/^[^\s]+:\s+/.test(text)) return false;
+  if (/^(?:npm|pnpm|yarn|bun|node|python3?|pytest|cargo|go|just|make|bash|sh|git|npx|uv|ruff|biome|tsc|vitest|jest|wrangler|patchpress|claude)\b/.test(text)) {
+    return true;
+  }
+  if (/^(?:\.{0,2}\/|[A-Za-z0-9_.-]+\/)[A-Za-z0-9_./:@%+-]+\.(?:sh|mjs|js|ts|py|rb|go|rs)\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function extractNextCommand(summary, prior) {
+  if (looksLikeShellCommand(prior)) return sanitizeCommandCandidate(prior);
+  const candidates = [];
+  for (const text of pickupTextCorpus(summary)) {
+    const inline = text.match(/`([^`\n]{2,400})`/g) || [];
+    for (const item of inline) candidates.push(item.slice(1, -1));
+    const afterColon = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
+    if (afterColon) candidates.push(afterColon);
+    const commandMatch = text.match(
+      /\b(?:npm|pnpm|yarn|bun|node|python3?|pytest|cargo|go|just|make|bash|sh|git|npx|uv|ruff|biome|tsc|vitest|jest|wrangler|patchpress|claude)\s+[^\n;]{1,360}/
+    );
+    if (commandMatch) candidates.push(commandMatch[0]);
+    const scriptMatch = text.match(
+      /(?:^|[\s:`])((?:\.{0,2}\/|[A-Za-z0-9_.-]+\/)[A-Za-z0-9_./:@%+-]+\.(?:sh|mjs|js|ts|py|rb|go|rs)\b[^\n;]{0,320})/
+    );
+    if (scriptMatch) candidates.push(scriptMatch[1]);
+  }
+  for (const candidate of candidates) {
+    if (looksLikeShellCommand(candidate)) return sanitizeCommandCandidate(candidate);
+  }
+  return "";
+}
+
+function isLikelyPickupPath(value) {
+  const text = sanitizeCommandCandidate(value);
+  if (!text || text.length > 240) return false;
+  if (/^https?:\/\//.test(text)) return false;
+  if (/^(?:\/|\.{1,2}\/)/.test(text)) return true;
+  if (/^(?:scripts|src|test|tests|docs|runs|transcripts|references|plugins|packages|apps|\.agents|\.github)\//.test(text)) {
+    return true;
+  }
+  return /\/[^/\s]+\.[A-Za-z0-9]{1,8}$/.test(text);
+}
+
+function derivePickupFiles(summary, fallbackFiles = []) {
+  const files = [];
+  for (const item of fallbackFiles || []) {
+    if (typeof item === "string") pushUniqueText(files, item, 12);
+  }
+  for (const item of summary.files_and_code_sections || []) {
+    if (isLikelyPickupPath(item?.path)) pushUniqueText(files, item.path, 12);
+  }
+  const pathPattern =
+    /(?:^|[\s("'`])((?:\/[A-Za-z0-9._~+@:%-]+)+|(?:\.{1,2}\/[A-Za-z0-9._~+@:%/-]+)|(?:(?:scripts|src|test|tests|docs|runs|transcripts|references|plugins|packages|apps|\.agents|\.github)\/[A-Za-z0-9._~+@:%/-]+))(?=$|[\s)"'`,;:])/g;
+  for (const text of pickupTextCorpus(summary)) {
+    let match;
+    while ((match = pathPattern.exec(text)) !== null) {
+      if (isLikelyPickupPath(match[1])) pushUniqueText(files, match[1], 12);
+    }
+  }
+  return files;
+}
+
+function derivePickupTests(summary, fallbackTests = []) {
+  const tests = compactStringArray(fallbackTests, [], 12);
+  const testPattern =
+    /\b(?:npm|pnpm|yarn|bun|node|python3?|pytest|cargo|go|just|make|bash|sh|npx|uv)\s+[^\n.;]*(?:test|check|lint|verify|gate|pytest|vitest|jest|cargo test)[^\n.;]*/gi;
+  for (const text of pickupTextCorpus(summary)) {
+    let match;
+    while ((match = testPattern.exec(text)) !== null) pushUniqueText(tests, match[0], 12);
+  }
+  return tests;
+}
+
+function normalizeStatusConflicts(value) {
+  if (!Array.isArray(value)) return [];
+  const conflicts = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const older = compactText(item.older_state);
+    const latest = compactText(item.latest_state);
+    const resolution = compactText(item.resolution);
+    if (!older && !latest && !resolution) continue;
+    conflicts.push({
+      older_state: older,
+      latest_state: latest,
+      resolution,
+    });
+    if (conflicts.length >= 8) break;
+  }
+  return conflicts;
+}
+
+function normalizePickupState(summary, stats = {}) {
+  const prior =
+    summary.pickup_state && typeof summary.pickup_state === "object" && !Array.isArray(summary.pickup_state)
+      ? summary.pickup_state
+      : {};
+  const priorCurrentTask = isEmptyPickupValue(prior.current_task) ? "" : compactText(prior.current_task);
+  const priorNextAction = isEmptyPickupValue(prior.next_action) ? "" : compactText(prior.next_action);
+  const currentTask = priorCurrentTask || compactText(summary.current_work);
+  const nextAction = priorNextAction || compactText(summary.optional_next_step);
+  const fallbackFiles = Array.isArray(prior.active_files) ? prior.active_files : [];
+  const fallbackTests = Array.isArray(prior.tests_run) ? prior.tests_run : [];
+  summary.pickup_state = {
+    cwd: compactText(stats.cwd) || compactText(prior.cwd),
+    git_branch: compactText(stats.gitBranch) || compactText(prior.git_branch),
+    current_task: currentTask,
+    next_action: nextAction,
+    next_command: extractNextCommand(summary, prior.next_command),
+    active_files: derivePickupFiles(summary, fallbackFiles),
+    tests_run: derivePickupTests(summary, fallbackTests),
+    known_caveats: compactStringArray(prior.known_caveats, [], 12),
+    status_conflicts: normalizeStatusConflicts(prior.status_conflicts),
+  };
+}
+
+function normalizeSourceIntegrity(summary, stats = {}) {
+  const prior =
+    summary.source_integrity && typeof summary.source_integrity === "object" && !Array.isArray(summary.source_integrity)
+      ? summary.source_integrity
+      : {};
+  summary.source_integrity = {
+    transcript_sha256: typeof stats.sha256 === "string" ? stats.sha256 : prior.transcript_sha256 || "",
+    transcript_lines_seen: Number.isInteger(stats.recordCount)
+      ? stats.recordCount
+      : Number.isInteger(prior.transcript_lines_seen)
+        ? prior.transcript_lines_seen
+        : 0,
+    verbatim_span_grounded: true,
+    limitations: typeof prior.limitations === "string" ? prior.limitations : "",
+  };
+}
+
+function normalizeDerivedSummaryFields(summary, stats = {}) {
   // Relax non-conforming block formats before validation. This runs on every
   // response (fresh provider output and reloaded output alike), so a single
   // multi-line bullet no longer aborts a fresh run with a hard validation fail.
@@ -2757,6 +3367,8 @@ function normalizeDerivedSummaryFields(summary) {
     if (!Array.isArray(summary[key])) compatibilityArraysDefaulted.push(key);
     summary[key] = derived[key];
   }
+  normalizePickupState(summary, stats);
+  normalizeSourceIntegrity(summary, stats);
   summary.source_lines_used = collectSourceLines(summary);
   return {
     compatibilityArraysDefaulted,
@@ -2789,45 +3401,42 @@ function stableJson(value) {
   }
 }
 
-function extractContentPartText(part) {
+function extractContentPartText(part, meta = {}) {
   if (!part || typeof part !== "object") return "";
+  if (part.type === "tool_use") return formatToolUse(part, meta);
+  if (part.type === "tool_result") {
+    const formatted = formatToolResultContent(part.content, { ...meta, toolName: "EditResult" });
+    return formatted ? "[tool_result]\n" + formatted : "";
+  }
   if (typeof part.text === "string") return part.text;
   if (typeof part.content === "string") return part.content;
   if (Array.isArray(part.content)) {
     const nested = part.content
-      .map((nestedPart) => extractContentPartText(nestedPart))
+      .map((nestedPart) => extractContentPartText(nestedPart, meta))
       .filter((text) => text.length > 0);
     if (nested.length > 0) return nested.join("\n\n");
   }
-  if (part.type === "tool_use") {
-    return stableJson({
-      type: part.type,
-      name: part.name || null,
-      input: part.input || null,
-    });
-  }
-  if (part.type === "tool_result") {
-    return stableJson({
-      type: part.type,
-      tool_use_id: part.tool_use_id || null,
-      content: part.content || null,
-    });
-  }
-  if (part.input && typeof part.input === "object") return stableJson(part.input);
+  if (part.input && typeof part.input === "object") return formatToolUse({ type: "tool_use", name: "unknown", input: part.input }, meta);
   return "";
 }
 
-function extractRecordText(record) {
+function extractRecordText(record, meta = {}) {
   if (!record || typeof record !== "object") return "";
   if (typeof record.content === "string") return record.content;
   if (typeof record.message?.content === "string") return record.message.content;
   if (Array.isArray(record.message?.content)) {
     const texts = record.message.content
-      .map((part) => extractContentPartText(part))
+      .map((part) => extractContentPartText(part, meta))
       .filter((text) => text.length > 0);
-    if (texts.length > 0) return texts.join("\n");
+    if (texts.length > 0) return texts.join("\n\n");
   }
-  if (record.toolUseResult) return stableJson(record.toolUseResult);
+  if (record.toolUseResult) {
+    const formatted = formatToolResultContent(
+      typeof record.toolUseResult === "string" ? record.toolUseResult : JSON.stringify(record.toolUseResult),
+      { ...meta, toolName: "EditResult" }
+    );
+    return formatted || stableJson(record.toolUseResult);
+  }
   if (record.attachment) return JSON.stringify(record.attachment, null, 2);
   if (typeof record.lastPrompt === "string" && record.lastPrompt.length > 0) return record.lastPrompt;
   if (typeof record.aiTitle === "string" && record.aiTitle.length > 0) return record.aiTitle;
@@ -2862,7 +3471,11 @@ function buildExtractedSpanText(slice, startLine) {
   let extractedText = "";
   const textSegments = [];
   for (const [idx, record] of slice.entries()) {
-    const text = extractRecordText(record);
+    const lineNumber = startLine + idx;
+    const text = extractRecordText(record, {
+      lineNumber,
+      cwdPrefix: transcriptCwdPrefix || null,
+    });
     if (text.length === 0) continue;
     if (textSegments.length > 0) extractedText += "\n\n";
     const start = extractedText.length;
@@ -2932,6 +3545,7 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
         );
       }
       const codeCapsules = extractCodeCapsules(currentSpanId, extractedText, textSegments);
+      const editCapsules = extractEditCapsules(currentSpanId, extractedText);
       spans.push({
         span_id: currentSpanId,
         block_index: block.summary_block_index ?? anchoredIndex,
@@ -2945,6 +3559,7 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
         char_range: [0, extractedText.length],
         text_segments: textSegments,
         code_capsules: codeCapsules,
+        edit_capsules: editCapsules,
         start_line: span.start_line,
         end_line: span.end_line,
         start_hash: lineHash(lineHashArtifacts, span.start_line),
@@ -2964,6 +3579,7 @@ function deriveRehydrationSpans(summary, records, lineHashArtifacts) {
 function renderRehydratedSummary(summary, spans) {
   const lines = [summary.summary_markdown.trim(), "", "## Rehydration Spans"];
   for (const span of spans) {
+    const editCount = (span.edit_capsules || []).length;
     lines.push(
       "- " +
         span.span_id +
@@ -2978,9 +3594,12 @@ function renderRehydratedSummary(summary, spans) {
         "-" +
         span.char_range[1] +
         " | code capsules " +
-        (span.code_capsules || []).length
+        (span.code_capsules || []).length +
+        (editCount ? " | edit capsules " + editCount : "")
     );
-    lines.push("```");
+    const fenceLang =
+      isFormattedEditText(span.extracted_text) || /@@tool EditResult/.test(span.extracted_text) ? "diff" : "";
+    lines.push("```" + fenceLang);
     lines.push(span.extracted_text.replace(/\n$/, ""));
     lines.push("```");
     for (const code of span.code_capsules || []) {
@@ -2995,6 +3614,20 @@ function renderRehydratedSummary(summary, spans) {
           code.char_range[1] +
           " | exact_sha256 " +
           code.exact_text_sha256
+      );
+    }
+    for (const edit of span.edit_capsules || []) {
+      lines.push(
+        "- edit " +
+          edit.id +
+          " | " +
+          edit.file_path +
+          " | +" +
+          edit.lines_added +
+          " -" +
+          edit.lines_removed +
+          " | diff_sha256 " +
+          edit.diff_sha256
       );
     }
     lines.push("");
@@ -3328,6 +3961,93 @@ function buildEvidenceCapsules(rehydratedSpans) {
   }));
 }
 
+function collapseLatestTailText(text, maxChars = 2400) {
+  const value = String(text || "").trim();
+  if (value.length <= maxChars) {
+    return {
+      text: value,
+      collapsed: false,
+      omitted_chars: 0,
+    };
+  }
+  const head = value.slice(0, 1200).replace(/\n$/, "");
+  const tail = value.slice(-800).replace(/^\n/, "");
+  return {
+    text: [head, "", "[... omitted " + Math.max(value.length - head.length - tail.length, 0) + " chars ...]", "", tail].join("\n"),
+    collapsed: true,
+    omitted_chars: Math.max(value.length - head.length - tail.length, 0),
+  };
+}
+
+function buildLatestTranscriptTail(records, limit = 12) {
+  const startIndex = Math.max(records.length - limit, 0);
+  return records.slice(startIndex).map((record, idx) => {
+    const line = startIndex + idx + 1;
+    const raw = JSON.stringify(record);
+    const text = extractRecordText(record, {
+      lineNumber: line,
+      cwdPrefix: transcriptCwdPrefix || null,
+    });
+    const collapsed = collapseLatestTailText(text || previewRecord(raw));
+    return {
+      line,
+      type: record.type || "unknown",
+      role: record.message?.role || null,
+      timestamp: record.timestamp || null,
+      record_sha256: sha256Text(raw),
+      char_count: String(text || "").length,
+      collapsed: collapsed.collapsed,
+      omitted_chars: collapsed.omitted_chars,
+      text: collapsed.text,
+    };
+  });
+}
+
+function addVerificationNotesFromLatestTail(pickup, latestTailRecords) {
+  for (const record of latestTailRecords || []) {
+    const text = record.text || "";
+    const descriptionMatch = text.match(/"description"\s*:\s*"([^"]*(?:[Vv]erify|[Tt]est|[Cc]heck)[^"]*)"/);
+    if (descriptionMatch) pushUniqueText(pickup.tests_run, descriptionMatch[1], 12);
+    const commandMatch = text.match(/"command"\s*:\s*"([^"]*(?:test|verify|check|lint|pytest|vitest|jest)[^"]*)"/i);
+    if (commandMatch) pushUniqueText(pickup.tests_run, commandMatch[1], 12);
+    if (/\bALL PASS\b/.test(text)) pushUniqueText(pickup.tests_run, "Latest tail verification reported ALL PASS.", 12);
+    const behaviorMatch = text.match(/\bBehavior check \((all pass)\)/i);
+    if (behaviorMatch) pushUniqueText(pickup.tests_run, "Behavior check (" + behaviorMatch[1].toLowerCase() + ").", 12);
+  }
+}
+
+function enrichPickupStateForHandoff(pickupState, handoffUserMessageSelection, latestTailRecords) {
+  const pickup = JSON.parse(JSON.stringify(pickupState || {}));
+  pickup.known_caveats = Array.isArray(pickup.known_caveats) ? pickup.known_caveats : [];
+  pickup.status_conflicts = Array.isArray(pickup.status_conflicts) ? pickup.status_conflicts : [];
+  pickup.tests_run = Array.isArray(pickup.tests_run) ? pickup.tests_run : [];
+  addVerificationNotesFromLatestTail(pickup, latestTailRecords);
+  const selectedText = (handoffUserMessageSelection?.selected || [])
+    .map((message) => message.text || "")
+    .join("\n");
+  const currentAndNext = [pickup.current_task, pickup.next_action].join("\n");
+  const completedNotice = /completed \(exit code 0\)|<status>completed<\/status>|"status"\s*:\s*"completed"/i.test(selectedText);
+  const runInstruction = /\b(run|execute|rerun|re-run)\b/i.test(currentAndNext);
+  if (completedNotice && runInstruction) {
+    pushUniqueText(
+      pickup.known_caveats,
+      "A selected historical task notification says a background command completed successfully; verify the latest tail/source state before re-running similar work.",
+      12
+    );
+    const alreadyCaptured = pickup.status_conflicts.some((item) =>
+      /completed/i.test(item.older_state + " " + item.latest_state + " " + item.resolution)
+    );
+    if (!alreadyCaptured) {
+      pickup.status_conflicts.push({
+        older_state: "Historical selected user/task notification reports completion with exit code 0.",
+        latest_state: currentAndNext.trim(),
+        resolution: "Do not blindly re-run; reconcile against Latest Transcript Tail and source transcript first.",
+      });
+    }
+  }
+  return pickup;
+}
+
 function buildHandoffState({
   summary,
   stats,
@@ -3335,8 +4055,11 @@ function buildHandoffState({
   beforePath,
   rehydratedSpans,
   handoffUserMessageSelection,
+  records,
 }) {
   const evidenceCapsules = buildEvidenceCapsules(rehydratedSpans);
+  const latestTailRecords = buildLatestTranscriptTail(records || [], 12);
+  const pickupState = enrichPickupStateForHandoff(summary.pickup_state, handoffUserMessageSelection, latestTailRecords);
   return {
     schema: HANDOFF_STATE_SCHEMA,
     version: 1,
@@ -3352,15 +4075,21 @@ function buildHandoffState({
         renderer: stats.transcriptRenderer,
       },
     ],
-    active_state: {
-      current_objective: summary.current_work,
-      next_step: summary.optional_next_step,
-      open_questions: [],
-      blockers: (summary.plans_and_task_state || [])
+      active_state: {
+        current_objective: summary.current_work,
+        next_step: summary.optional_next_step,
+        open_questions: [],
+        blockers: (summary.plans_and_task_state || [])
         .filter((item) => item.status === "blocked")
-        .map((item) => item.item),
-    },
-    summary_markdown: summary.summary_markdown,
+          .map((item) => item.item),
+      },
+      pickup_state: pickupState,
+      latest_transcript_tail: {
+        limit: 12,
+        records: latestTailRecords,
+        conflict_policy: "Final tail records are deterministic latest context and outrank older selected user-message excerpts when state conflicts.",
+      },
+      summary_markdown: summary.summary_markdown,
     summary_blocks: summary.summary_blocks,
     rules_and_invariants: summary.rules_and_invariants,
     plans_and_task_state: summary.plans_and_task_state,
@@ -3394,10 +4123,34 @@ function isSha256Hex(value) {
 }
 
 function validateHandoffState(state) {
-  if (!state || typeof state !== "object" || Array.isArray(state)) return "handoff state is not an object";
-  if (state.schema !== HANDOFF_STATE_SCHEMA) return "handoff state schema invalid";
-  if (!Array.isArray(state.user_intent_events)) return "handoff state user_intent_events missing";
-  if (!Array.isArray(state.evidence_capsules)) return "handoff state evidence_capsules missing";
+    if (!state || typeof state !== "object" || Array.isArray(state)) return "handoff state is not an object";
+    if (state.schema !== HANDOFF_STATE_SCHEMA) return "handoff state schema invalid";
+    if (!state.pickup_state || typeof state.pickup_state !== "object" || Array.isArray(state.pickup_state)) {
+      return "handoff state pickup_state missing";
+    }
+    for (const key of ["cwd", "git_branch", "current_task", "next_action", "next_command"]) {
+      if (typeof state.pickup_state[key] !== "string") return "handoff state pickup_state." + key + " missing";
+    }
+    for (const key of ["active_files", "tests_run", "known_caveats", "status_conflicts"]) {
+      if (!Array.isArray(state.pickup_state[key])) return "handoff state pickup_state." + key + " missing";
+    }
+    if (!state.latest_transcript_tail || typeof state.latest_transcript_tail !== "object") {
+      return "handoff state latest_transcript_tail missing";
+    }
+    if (!Array.isArray(state.latest_transcript_tail.records)) {
+      return "handoff state latest_transcript_tail.records missing";
+    }
+    for (const [idx, record] of state.latest_transcript_tail.records.entries()) {
+      const label = "handoff state latest_transcript_tail.records[" + idx + "]";
+      if (!Number.isInteger(record.line) || record.line < 1) return label + ".line invalid";
+      if (typeof record.type !== "string" || !record.type) return label + ".type missing";
+      if (!isSha256Hex(record.record_sha256)) return label + ".record_sha256 invalid";
+      if (typeof record.text !== "string") return label + ".text missing";
+      if (typeof record.collapsed !== "boolean") return label + ".collapsed invalid";
+      if (!Number.isInteger(record.omitted_chars) || record.omitted_chars < 0) return label + ".omitted_chars invalid";
+    }
+    if (!Array.isArray(state.user_intent_events)) return "handoff state user_intent_events missing";
+    if (!Array.isArray(state.evidence_capsules)) return "handoff state evidence_capsules missing";
   for (const [idx, event] of state.user_intent_events.entries()) {
     const label = "handoff state user_intent_events[" + idx + "]";
     if (typeof event.id !== "string" || !event.id) return label + ".id missing";
@@ -3511,6 +4264,7 @@ function extractEvidenceLiteralIndex(rehydratedSpans, limit = 128) {
     },
     { cap: 28, values: collectEvidenceLiterals(rehydratedSpans, /\b[A-Z][A-Z0-9_]{2,}\b/g) },
     { cap: 16, values: collectEvidenceLiterals(rehydratedSpans, /\b[a-z]+\/[a-z0-9.+-]+\b/g) },
+    { cap: 48, values: collectEvidenceLiterals(rehydratedSpans, /^@@file ([^\n]+)$/gm) },
     {
       cap: 48,
       values: collectEvidenceLiterals(
@@ -3535,6 +4289,70 @@ function extractEvidenceLiteralIndex(rehydratedSpans, limit = 128) {
   return literals;
 }
 
+function renderPickupStateSection(state) {
+  const pickup = state.pickup_state;
+  if (!pickup || typeof pickup !== "object") return [];
+  const lines = ["## Pickup State", ""];
+  if (pickup.cwd) lines.push("- CWD: `" + pickup.cwd.replace(/`/g, "\\`") + "`");
+  if (pickup.git_branch) lines.push("- Git branch: `" + pickup.git_branch.replace(/`/g, "\\`") + "`");
+  if (pickup.current_task) lines.push("- Current task: " + pickup.current_task);
+  if (pickup.next_action) lines.push("- Next action: " + pickup.next_action);
+  if (pickup.next_command) {
+    lines.push("- Next command:");
+    pushFencedText(lines, pickup.next_command, "sh");
+  }
+  if (Array.isArray(pickup.active_files) && pickup.active_files.length > 0) {
+    lines.push(
+      "- Active files/artifacts: " +
+        pickup.active_files.map((item) => "`" + item.replace(/`/g, "\\`") + "`").join(", ")
+    );
+  }
+  if (Array.isArray(pickup.tests_run) && pickup.tests_run.length > 0) {
+    lines.push("- Tests run:");
+    for (const item of pickup.tests_run) lines.push("  - " + item);
+  }
+  if (Array.isArray(pickup.known_caveats) && pickup.known_caveats.length > 0) {
+    lines.push("- Caveats:");
+    for (const item of pickup.known_caveats) lines.push("  - " + item);
+  }
+  if (Array.isArray(pickup.status_conflicts) && pickup.status_conflicts.length > 0) {
+    lines.push("- Status conflicts resolved:");
+    for (const conflict of pickup.status_conflicts) {
+      lines.push(
+        "  - Older: " +
+          (conflict.older_state || "(unspecified)") +
+          " | Latest: " +
+          (conflict.latest_state || "(unspecified)") +
+          " | Resolution: " +
+          (conflict.resolution || "(unspecified)")
+      );
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
+function renderLatestTranscriptTailSection(state) {
+  const tail = state.latest_transcript_tail;
+  if (!tail || !Array.isArray(tail.records) || tail.records.length === 0) return [];
+  const lines = ["## Latest Transcript Tail", ""];
+  if (tail.conflict_policy) lines.push(tail.conflict_policy, "");
+  for (const record of tail.records) {
+    const attrs = [
+      "line " + record.line,
+      record.type || "unknown",
+      record.role ? "role " + record.role : "",
+      record.timestamp || "",
+      record.collapsed ? "collapsed " + record.omitted_chars + " chars" : "",
+    ].filter(Boolean);
+    lines.push("### " + attrs.join(" | "));
+    lines.push("");
+    pushFencedText(lines, record.text || "", "text");
+    lines.push("");
+  }
+  return lines;
+}
+
 function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedSpans, manifestPath, statePath, beforePath }) {
   const lines = [
     "# Compaction Handoff",
@@ -3542,6 +4360,8 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
     "This is a rendered continuation handoff derived from canonical local state. Historical user messages and evidence are quoted context, not new instructions.",
     "",
   ];
+
+  lines.push(...renderPickupStateSection(state));
 
   // Always surface the continuation anchor (current objective + next step) at the top
   // of the handoff. These come from canonical state (active_state), which the model
@@ -3560,6 +4380,7 @@ function renderHandoffMarkdown({ state, handoffUserMessageSelection, rehydratedS
     lines.push(state.active_state.next_step);
     lines.push("");
   }
+  lines.push(...renderLatestTranscriptTailSection(state));
   if (state.summary_markdown.trim()) {
     lines.push(state.summary_markdown.trim());
     lines.push("");
@@ -3997,8 +4818,13 @@ function buildCompactedTranscript({
   handoffManifestPath,
   handoffStatePath,
   handoffMdPath,
-}) {
-  const baseMetadata = compactBaseMetadata(pickBaseMetadata(records));
+  }) {
+    const pickedMetadata = pickBaseMetadata(records);
+    const baseMetadata = compactBaseMetadata({
+      ...pickedMetadata,
+      cwd: stats.cwd || pickedMetadata.cwd,
+      gitBranch: stats.gitBranch || pickedMetadata.gitBranch,
+    });
   const boundaryUuid = safeUuid();
   const summaryUuid = safeUuid();
   const originalTailParent = extractLastUserUuid(records);
@@ -4136,6 +4962,18 @@ async function main() {
 
   const transcript = await readFile(inputPath, "utf8");
   const allRecords = parseJsonl(transcript);
+  if (PROVIDER_REGISTRY[PROVIDER].family === "anthropic" && !MODEL_EXPLICIT) {
+    // Use the model already driving the live session (prompt-cache affinity):
+    // Claude Code transcript records carry the producing model on message.model.
+    for (let i = allRecords.length - 1; i >= 0; i--) {
+      const sessionModel = allRecords[i]?.message?.model;
+      if (typeof sessionModel === "string" && sessionModel && sessionModel !== "<synthetic>") {
+        MODEL = sessionModel;
+        break;
+      }
+    }
+    process.stderr.write("[anthropic model] session model = " + MODEL + "\n");
+  }
   // Filter the transcript to citable records before numbering. Every record the
   // model can cite is then guaranteed to rehydrate to non-empty text, so an
   // empty evidence capsule is unrepresentable. records, lineHashArtifacts, and
@@ -4164,19 +5002,22 @@ async function main() {
         MODEL +
         "\n"
     );
-  }
-  const sha256 = createHash("sha256").update(transcript).digest("hex");
-  const stats = {
-    inputPath,
-    sha256,
-    bytes: Buffer.byteLength(transcript),
+    }
+    const sha256 = createHash("sha256").update(transcript).digest("hex");
+    const baseMetadata = compactBaseMetadata(pickBaseMetadata(allRecords));
+    const stats = {
+      inputPath,
+      sha256,
+      bytes: Buffer.byteLength(transcript),
     records: records.length,
     totalRecords: allRecords.length,
     nonCitableRecords: allRecords.length - records.length,
-    approxTokens: Math.ceil(transcript.length / 4),
-    userRecords: countUserMessages(records),
-    transcriptRenderer,
-  };
+      approxTokens: Math.ceil(transcript.length / 4),
+      userRecords: countUserMessages(records),
+      transcriptRenderer,
+      cwd: baseMetadata.cwd || "",
+      gitBranch: baseMetadata.gitBranch || "",
+    };
   if (rendererStatsReportPath) {
     const reportPath = resolve(rendererStatsReportPath);
     const markdown = renderRendererStatsMarkdown({
@@ -4234,6 +5075,9 @@ async function main() {
     transcript_bytes: stats.bytes,
     transcript_records: stats.records,
     transcript_renderer: transcriptRenderer,
+    render_body_cleanup_removed_chars: lineHashArtifacts.renderStats.renderBodyCleanupRemovedChars || 0,
+    render_body_cleanup_removed_lines: lineHashArtifacts.renderStats.renderBodyCleanupRemovedLines || 0,
+    render_body_cleanup_dedented_blocks: lineHashArtifacts.renderStats.renderBodyCleanupDedentedBlocks || 0,
     estimated_char_div_4_tokens: stats.approxTokens,
     request_body_bytes: Buffer.byteLength(bodyText),
     wrapped_transcript_bytes: Buffer.byteLength(lineHashArtifacts.wrappedTranscript),
@@ -4253,6 +5097,12 @@ async function main() {
       compressesToolOutput ? lineHashArtifacts.renderStats.renderedToolOutputChars : null,
     tool_output_omitted_chars:
       compressesToolOutput ? lineHashArtifacts.renderStats.omittedToolOutputChars : null,
+    tool_use_compress_after: toolUseCompressAfter,
+    tool_use_compress_min_chars: toolUseCompressMinChars,
+    tool_use_compressed_records: lineHashArtifacts.renderStats.compressedToolUseRecords || null,
+    tool_use_original_chars: lineHashArtifacts.renderStats.originalToolUseChars || null,
+    tool_use_omitted_chars: lineHashArtifacts.renderStats.omittedToolUseChars || null,
+    transcript_cwd_prefix: transcriptCwdPrefix || null,
     custom_summary_instructions: customSummaryInstructions.trim() || null,
     compact_and_prompt: compactAndPrompt.trim() || null,
     from_output: fromOutputPath ? resolve(fromOutputPath) : null,
@@ -4364,7 +5214,24 @@ async function main() {
 
     const _family = _reg.family;
     const response =
-      _family === "gemini"
+      _family === "anthropic"
+        ? await fetch(endpoint, {
+            method: "POST",
+            headers: (() => {
+              const key = _reg.resolveKey();
+              const isOAuth = Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) || key.startsWith("sk-ant-oat");
+              return {
+                ...(isOAuth
+                  ? { Authorization: "Bearer " + key, "anthropic-beta": ANTHROPIC_OAUTH_BETA }
+                  : { "x-api-key": key }),
+                "anthropic-version": ANTHROPIC_VERSION,
+                Accept: "text/event-stream",
+                "Content-Type": "application/json",
+              };
+            })(),
+            body: bodyText,
+          })
+        : _family === "gemini"
         ? await fetch(endpoint, {
             method: "POST",
             headers: {
@@ -4597,7 +5464,12 @@ async function main() {
 
   // Canonicalize local-only fields before validation. Provider schemas stay
   // focused on anchored output; the harness derives compatibility fields.
-  const derivedSummaryNormalization = normalizeDerivedSummaryFields(summary);
+    const derivedSummaryNormalization = normalizeDerivedSummaryFields(summary, {
+      sha256,
+      recordCount: records.length,
+      cwd: stats.cwd,
+      gitBranch: stats.gitBranch,
+    });
 
   const validationError = validateSummary(summary, lineHashArtifacts);
   if (validationError) {
@@ -4726,14 +5598,15 @@ async function main() {
   await writeFile(rehydratedSpansPath, JSON.stringify(rehydratedSpans, null, 2) + "\n");
   await writeFile(rehydratedSummaryPath, renderRehydratedSummary(summary, rehydratedSpans));
 
-  const handoffState = buildHandoffState({
-    summary,
-    stats,
-    run,
-    beforePath,
-    rehydratedSpans,
-    handoffUserMessageSelection,
-  });
+    const handoffState = buildHandoffState({
+      summary,
+      stats,
+      run,
+      beforePath,
+      rehydratedSpans,
+      handoffUserMessageSelection,
+      records,
+    });
   const handoffStateValidationError = validateHandoffState(handoffState);
   if (handoffStateValidationError) {
     const failure = {
